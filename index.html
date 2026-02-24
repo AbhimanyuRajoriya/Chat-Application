@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Chat Application</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <!-- Login Screen -->
+    <div id="loginContainer" class="container login-container">
+        <div class="login-card">
+            <h1>Chat Application</h1>
+            <p class="subtitle">Real-time messaging powered by AWS</p>
+            
+            <form id="loginForm">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input 
+                        type="text" 
+                        id="username" 
+                        name="username" 
+                        placeholder="Enter your username"
+                        required
+                    >
+                </div>
+                
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input 
+                        type="password" 
+                        id="password" 
+                        name="password" 
+                        placeholder="Enter your password"
+                        required
+                    >
+                </div>
+                
+                <button type="submit" class="btn btn-primary btn-block">
+                    Login with Cognito
+                </button>
+            </form>
+            
+            <div id="loginError" class="error-message" style="display: none;"></div>
+            
+            <div class="login-info">
+                <p>Demo credentials:</p>
+                <p style="font-size: 12px; color: #666;">
+                    Check AWS Cognito User Pool for test users
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chat Screen -->
+    <div id="chatContainer" class="container chat-container" style="display: none;">
+        <div class="chat-header">
+            <div class="header-content">
+                <h1>Chat Room</h1>
+                <p id="roomInfo">Room: <span id="roomName">general</span></p>
+            </div>
+            <div class="user-info">
+                <span id="currentUser"></span>
+                <button id="logoutBtn" class="btn btn-secondary">Logout</button>
+            </div>
+        </div>
+
+        <div class="chat-main">
+            <!-- Room Selection -->
+            <div class="room-selector">
+                <h3>Rooms</h3>
+                <div class="room-list">
+                    <button class="room-btn active" data-room="general">
+                        # general
+                    </button>
+                    <button class="room-btn" data-room="random">
+                        # random
+                    </button>
+                    <button class="room-btn" data-room="tech">
+                        # tech
+                    </button>
+                </div>
+            </div>
+
+            <!-- Messages Display -->
+            <div class="chat-messages" id="messagesContainer">
+                <div class="messages-header">
+                    <h2>Messages</h2>
+                </div>
+                <div id="messageList" class="message-list">
+                    <!-- Messages appear here -->
+                </div>
+            </div>
+
+            <!-- Message Input -->
+            <div class="chat-input-section">
+                <form id="messageForm">
+                    <div class="input-group">
+                        <input 
+                            type="text" 
+                            id="messageInput" 
+                            placeholder="Type a message..."
+                            autocomplete="off"
+                        >
+                        <button type="submit" class="btn btn-primary">
+                            Send
+                        </button>
+                    </div>
+                </form>
+                <div id="connectionStatus" class="connection-status">
+                    <span class="status-indicator disconnected"></span>
+                    <span id="statusText">Disconnected</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div id="loadingSpinner" class="loading-spinner" style="display: none;">
+        <div class="spinner"></div>
+        <p>Connecting...</p>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
