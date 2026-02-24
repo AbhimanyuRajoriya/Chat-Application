@@ -3,18 +3,18 @@
 const CONFIG = {
     // AWS Cognito
     COGNITO_REGION: "us-east-1",
-    COGNITO_USER_POOL_ID: "us-east-1_8zazmmLV1",
-    COGNITO_CLIENT_ID: "1234567890abcdefghijklmnop",
-    COGNITO_DOMAIN: "your-domain.auth.us-east-1.amazoncognito.com",
+    COGNITO_USER_POOL_ID: "us-east-1_RC8qQwJhl",
+    COGNITO_CLIENT_ID: "4ks52pngn4nvenaqtup1ogjhod",
+    COGNITO_DOMAIN: "https://us-east-1rc8qqwjhl.auth.us-east-1.amazoncognito.com",
     
     // Backend API
     // For local development:
-    // API_GATEWAY_ENDPOINT: "ws://localhost:8000",
-    // API_REST_ENDPOINT: "http://localhost:8000",
+    API_GATEWAY_ENDPOINT: "ws://54.196.148.112:8000/ws",
+    API_REST_ENDPOINT: "http://54.196.148.112:8000",
     
     // For production (CloudFront):
-    API_GATEWAY_ENDPOINT: "wss://13.218.244.88:8000/ws",
-    API_REST_ENDPOINT: "https://13.218.244.88:8000",
+    // API_GATEWAY_ENDPOINT: "wss://54.196.148.112:8000/ws",
+    // API_REST_ENDPOINT: "https://54.196.148.112:8000",
     
     // WebSocket configuration
     WEBSOCKET_RECONNECT_DELAY: 3000,  // 3 seconds
