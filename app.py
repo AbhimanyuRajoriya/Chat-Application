@@ -4,7 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import json
 from datetime import datetime
-
+import uvicorn
 from config import API_TITLE, API_VERSION, DEBUG, FRONTEND_DOMAIN
 from auth import authenticator, JWTError
 from db import db_manager
@@ -207,9 +207,6 @@ async def global_exception_handler(request, exc):
     return {"error": "Internal server error"}
 
 if __name__ == "__main__":
-    import uvicorn
-    
-    # Run: uvicorn app:app --host 0.0.0.0 --port 8000 --reload
     uvicorn.run(
         app,
         host="0.0.0.0",
