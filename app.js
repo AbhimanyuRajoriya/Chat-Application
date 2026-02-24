@@ -1,9 +1,10 @@
-// Real-Time Chat Application - Frontend
+// Real-Time Chat Application - Frontend (No Login, Direct Chat)
 
 class ChatApp {
     constructor() {
-        this.username = null;
-        this.token = null;
+        // Get username from Cognito token or generate one
+        this.username = this.initializeUsername();
+        this.token = this.getToken();
         this.currentRoom = CONFIG.DEFAULT_ROOM;
         this.websocket = null;
         this.isConnected = false;
@@ -11,17 +12,14 @@ class ChatApp {
         
         this.initializeElements();
         this.attachEventListeners();
-        this.checkAuthenticationStatus();
+        
+        // Start directly in chat mode
+        this.showChatUI();
+        this.loadMessageHistory();
+        this.connectWebSocket();
     }
     
     initializeElements() {
-        // Login elements
-        this.loginForm = document.getElementById("loginForm");
-        this.loginContainer = document.getElementById("loginContainer");
-        this.loginError = document.getElementById("loginError");
-        this.usernameInput = document.getElementById("username");
-        this.passwordInput = document.getElementById("password");
-        
         // Chat elements
         this.chatContainer = document.getElementById("chatContainer");
         this.messageForm = document.getElementById("messageForm");
@@ -31,18 +29,13 @@ class ChatApp {
         this.roomNameSpan = document.getElementById("roomName");
         this.statusText = document.getElementById("statusText");
         this.statusIndicator = document.querySelector(".status-indicator");
-        this.logoutBtn = document.getElementById("logoutBtn");
         this.roomButtons = document.querySelectorAll(".room-btn");
         this.loadingSpinner = document.getElementById("loadingSpinner");
     }
     
     attachEventListeners() {
-        // Login
-        this.loginForm.addEventListener("submit", (e) => this.handleLogin(e));
-        
         // Chat
         this.messageForm.addEventListener("submit", (e) => this.handleSendMessage(e));
-        this.logoutBtn.addEventListener("click", () => this.handleLogout());
         
         // Room selection
         this.roomButtons.forEach(btn => {
@@ -50,105 +43,109 @@ class ChatApp {
         });
     }
     
-    checkAuthenticationStatus() {
-        const token = localStorage.getItem("token");
-        const username = localStorage.getItem("username");
+    initializeUsername() {
+        /**
+         * Get username from:
+         * 1. localStorage (if already set)
+         * 2. Cognito token (if available)
+         * 3. Generate unique username
+         */
+        let username = localStorage.getItem("username");
         
-        if (token && username) {
-            this.token = token;
-            this.username = username;
-            this.showChatUI();
-            this.connectWebSocket();
-            this.loadMessageHistory();
+        if (!username) {
+            // Try to get from Cognito token
+            const token = this.getToken();
+            if (token) {
+                try {
+                    const decoded = JSON.parse(atob(token));
+                    username = decoded.username || decoded['cognito:username'];
+                } catch (e) {
+                    // Token not valid, generate random
+                }
+            }
+            
+            // If still no username, generate one
+            if (!username) {
+                username = this.generateUsername();
+            }
+            
+            localStorage.setItem("username", username);
         }
+        
+        return username;
     }
     
-    async handleLogin(e) {
-        e.preventDefault();
+    generateUsername() {
+        /**
+         * Generate unique username if not provided
+         * Format: User_XXXX (random 4 digits)
+         */
+        const randomId = Math.floor(Math.random() * 9000) + 1000;
+        return `User_${randomId}`;
+    }
+    
+    getToken() {
+        /**
+         * Get JWT token from:
+         * 1. localStorage
+         * 2. URL query parameter (after Cognito redirect)
+         * 3. Generate mock token
+         */
+        let token = localStorage.getItem("token");
         
-        const username = this.usernameInput.value.trim();
-        const password = this.passwordInput.value;
-        
-        if (!username || !password) {
-            this.showLoginError("Please enter username and password");
-            return;
-        }
-        
-        this.showLoadingSpinner();
-        
-        try {
-            // In production, this would authenticate with AWS Cognito
-            // For demo, we'll simulate getting a token
-            const token = await this.authenticateWithCognito(username, password);
+        if (!token) {
+            // Check URL for token from Cognito redirect
+            const params = new URLSearchParams(window.location.search);
+            token = params.get("token");
             
             if (token) {
-                this.username = username;
-                this.token = token;
-                
-                // Save to localStorage
                 localStorage.setItem("token", token);
-                localStorage.setItem("username", username);
-                
-                // Show chat UI
-                this.showChatUI();
-                
-                // Connect WebSocket
-                this.connectWebSocket();
-                
-                // Load message history
-                this.loadMessageHistory();
             }
-        } catch (error) {
-            this.showLoginError(`Login failed: ${error.message}`);
-        } finally {
-            this.hideLoadingSpinner();
         }
+        
+        if (!token) {
+            // Generate mock token for demo
+            token = this.generateMockToken(this.username);
+            localStorage.setItem("token", token);
+        }
+        
+        return token;
     }
     
-    async authenticateWithCognito(username, password) {
-        // This is a simplified version for demo
-        // In production, use AWS Amplify or AWS SDK for proper Cognito authentication
+    generateMockToken(username) {
+        /**
+         * Generate a mock JWT token
+         * In production, this comes from Cognito
+         */
+        const mockToken = btoa(JSON.stringify({
+            sub: `user-${Date.now()}`,
+            username: username,
+            'cognito:username': username,
+            iss: `https://cognito-idp.${CONFIG.COGNITO_REGION}.amazonaws.com/${CONFIG.COGNITO_USER_POOL_ID}`,
+            aud: CONFIG.COGNITO_CLIENT_ID,
+            token_use: "id",
+            auth_time: Math.floor(Date.now() / 1000),
+            exp: Math.floor(Date.now() / 1000) + 86400  // 24 hours
+        }));
         
-        try {
-            // For demo, we'll create a mock JWT token
-            // In production, authenticate with Cognito User Pool
-            
-            // Mock authentication - replace with real Cognito call
-            const mockToken = btoa(JSON.stringify({
-                sub: "mock-user-id",
-                username: username,
-                iss: `https://cognito-idp.${CONFIG.COGNITO_REGION}.amazonaws.com/${CONFIG.COGNITO_USER_POOL_ID}`,
-                aud: CONFIG.COGNITO_CLIENT_ID,
-                token_use: "id",
-                auth_time: Math.floor(Date.now() / 1000),
-                exp: Math.floor(Date.now() / 1000) + 3600
-            }));
-            
-            return mockToken;
-            
-            // Real Cognito authentication would be:
-            // const response = await fetch('https://your-cognito-domain/oauth2/authorize?...');
-            
-        } catch (error) {
-            throw new Error(`Authentication failed: ${error.message}`);
-        }
+        return mockToken;
     }
     
     showChatUI() {
-        this.loginContainer.style.display = "none";
+        // Chat is always visible (no login screen)
         this.chatContainer.style.display = "flex";
-        this.currentUserSpan.textContent = `Welcome, ${this.username}!`;
+        this.currentUserSpan.textContent = `👤 ${this.username}`;
     }
     
     connectWebSocket() {
         const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${this.token}`;
         
-        console.log(`Connecting to WebSocket: ${wsUrl}`);
+        console.log(`🔗 Connecting to WebSocket: ${wsUrl.split('?')[0]}...`);
         
         this.websocket = new WebSocket(wsUrl);
         
         this.websocket.onopen = () => {
-            console.log("WebSocket connected");
+            console.log("✅ WebSocket connected");
             this.isConnected = true;
             this.updateConnectionStatus(true);
             this.reconnectAttempts = 0;
@@ -159,17 +156,17 @@ class ChatApp {
                 const message = JSON.parse(event.data);
                 this.handleMessageReceived(message);
             } catch (error) {
-                console.error("Error parsing message:", error);
+                console.error("❌ Error parsing message:", error);
             }
         };
         
         this.websocket.onerror = (error) => {
-            console.error("WebSocket error:", error);
+            console.error("❌ WebSocket error:", error);
             this.updateConnectionStatus(false);
         };
         
         this.websocket.onclose = () => {
-            console.log("WebSocket disconnected");
+            console.log("⏹️ WebSocket disconnected");
             this.isConnected = false;
             this.updateConnectionStatus(false);
             this.attemptReconnect();
@@ -181,10 +178,11 @@ class ChatApp {
             this.reconnectAttempts++;
             const delay = CONFIG.WEBSOCKET_RECONNECT_DELAY * this.reconnectAttempts;
             
-            console.log(`Attempting to reconnect in ${delay}ms...`);
+            console.log(`🔄 Attempting to reconnect in ${delay}ms... (attempt ${this.reconnectAttempts})`);
             setTimeout(() => this.connectWebSocket(), delay);
         } else {
-            this.showLoginError("Failed to connect. Please refresh the page.");
+            console.error("❌ Max reconnection attempts reached");
+            this.showError("Connection failed. Please refresh the page.");
         }
     }
     
@@ -208,7 +206,11 @@ class ChatApp {
             messageDiv.classList.add("other");
         }
         
-        const time = new Date(timestamp).toLocaleTimeString();
+        const time = new Date(timestamp).toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit'
+        });
         
         messageDiv.innerHTML = `
             <div class="message-content">${this.escapeHtml(text)}</div>
@@ -216,7 +218,12 @@ class ChatApp {
         `;
         
         this.messageList.appendChild(messageDiv);
+        
+        // Auto-scroll to bottom
         this.messageList.scrollTop = this.messageList.scrollHeight;
+        
+        // Save to localStorage for persistence
+        this.saveMessageToLocalStorage(this.currentRoom, username, text, timestamp);
     }
     
     displaySystemMessage(text) {
@@ -237,6 +244,9 @@ class ChatApp {
         const text = this.messageInput.value.trim();
         
         if (!text || !this.isConnected) {
+            if (!this.isConnected) {
+                this.showError("Not connected to server");
+            }
             return;
         }
         
@@ -248,14 +258,21 @@ class ChatApp {
             
             this.websocket.send(JSON.stringify(message));
             this.messageInput.value = "";
+            this.messageInput.focus();
         } catch (error) {
-            console.error("Error sending message:", error);
-            this.showLoginError("Failed to send message");
+            console.error("❌ Error sending message:", error);
+            this.showError("Failed to send message");
         }
     }
     
     async loadMessageHistory() {
+        /**
+         * Load message history from:
+         * 1. DynamoDB via API (if connected)
+         * 2. localStorage (if API fails)
+         */
         try {
+            // Try loading from API first
             const url = `${CONFIG.API_REST_ENDPOINT}/rooms/${this.currentRoom}/messages?limit=${CONFIG.MESSAGE_LOAD_LIMIT}`;
             
             const response = await fetch(url, {
@@ -273,14 +290,77 @@ class ChatApp {
             // Clear current messages
             this.messageList.innerHTML = "";
             
-            // Load historical messages
+            // Load historical messages from API
             if (data.messages && data.messages.length > 0) {
                 data.messages.forEach(msg => {
                     this.displayMessage(msg.username, msg.text, msg.timestamp);
                 });
+                console.log(`✅ Loaded ${data.messages.length} messages from server`);
+            } else {
+                // No messages on server, load from localStorage
+                this.loadFromLocalStorage();
             }
         } catch (error) {
-            console.error("Error loading message history:", error);
+            console.warn("⚠️ Could not load from server:", error.message);
+            // Fallback to localStorage
+            this.loadFromLocalStorage();
+        }
+    }
+    
+    loadFromLocalStorage() {
+        /**
+         * Load message history from browser localStorage
+         * Useful when offline or API unavailable
+         */
+        try {
+            const storageKey = `chat_history_${this.currentRoom}`;
+            const saved = localStorage.getItem(storageKey);
+            
+            if (saved) {
+                const messages = JSON.parse(saved);
+                this.messageList.innerHTML = "";
+                
+                messages.forEach(msg => {
+                    this.displayMessage(msg.username, msg.text, msg.timestamp);
+                });
+                
+                console.log(`✅ Loaded ${messages.length} messages from local storage`);
+            }
+        } catch (error) {
+            console.error("❌ Error loading from localStorage:", error);
+        }
+    }
+    
+    saveMessageToLocalStorage(roomId, username, text, timestamp) {
+        /**
+         * Save messages to localStorage for persistence
+         * Stores up to 100 most recent messages per room
+         */
+        try {
+            const storageKey = `chat_history_${roomId}`;
+            let messages = [];
+            
+            const saved = localStorage.getItem(storageKey);
+            if (saved) {
+                messages = JSON.parse(saved);
+            }
+            
+            // Add new message
+            messages.push({
+                username,
+                text,
+                timestamp
+            });
+            
+            // Keep only last 100 messages
+            if (messages.length > 100) {
+                messages = messages.slice(-100);
+            }
+            
+            // Save to localStorage
+            localStorage.setItem(storageKey, JSON.stringify(messages));
+        } catch (error) {
+            console.error("❌ Error saving to localStorage:", error);
         }
     }
     
@@ -304,6 +384,8 @@ class ChatApp {
         // Load new room history and connect
         this.loadMessageHistory();
         this.connectWebSocket();
+        
+        console.log(`🚀 Switched to room: ${roomId}`);
     }
     
     updateConnectionStatus(connected) {
@@ -311,43 +393,36 @@ class ChatApp {
             this.statusIndicator.classList.add("connected");
             this.statusIndicator.classList.remove("disconnected");
             this.statusText.textContent = "Connected";
+            this.statusIndicator.title = "Connected to server";
         } else {
             this.statusIndicator.classList.remove("connected");
             this.statusIndicator.classList.add("disconnected");
             this.statusText.textContent = "Disconnected";
+            this.statusIndicator.title = "Trying to reconnect...";
         }
     }
     
-    handleLogout() {
-        localStorage.removeItem("token");
-        localStorage.removeItem("username");
+    showError(message) {
+        /**
+         * Show error message in a subtle way
+         */
+        console.error("❌ Error:", message);
         
-        if (this.websocket) {
-            this.websocket.close();
-        }
+        // Could add a toast notification here
+        // For now, just log and show in status
+        this.statusText.textContent = message;
+        this.statusText.style.color = "#f44336";
         
-        this.chatContainer.style.display = "none";
-        this.loginContainer.style.display = "flex";
-        
-        this.usernameInput.value = "";
-        this.passwordInput.value = "";
-        this.messageList.innerHTML = "";
-    }
-    
-    showLoginError(message) {
-        this.loginError.textContent = message;
-        this.loginError.style.display = "block";
-    }
-    
-    showLoadingSpinner() {
-        this.loadingSpinner.style.display = "flex";
-    }
-    
-    hideLoadingSpinner() {
-        this.loadingSpinner.style.display = "none";
+        setTimeout(() => {
+            this.statusText.textContent = this.isConnected ? "Connected" : "Disconnected";
+            this.statusText.style.color = "#666";
+        }, 5000);
     }
     
     escapeHtml(text) {
+        /**
+         * Prevent XSS by escaping HTML
+         */
         const div = document.createElement("div");
         div.textContent = text;
         return div.innerHTML;
@@ -356,5 +431,7 @@ class ChatApp {
 
 // Initialize app when DOM is ready
 document.addEventListener("DOMContentLoaded", () => {
+    console.log("🚀 Chat Application Starting...");
     window.chatApp = new ChatApp();
+    console.log("✅ Chat Application Ready");
 });

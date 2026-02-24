@@ -3,7 +3,7 @@
 const CONFIG = {
     // AWS Cognito
     COGNITO_REGION: "us-east-1",
-    COGNITO_USER_POOL_ID: "us-east-1_xxxxxxxxx",
+    COGNITO_USER_POOL_ID: "us-east-1_8zazmmLV1",
     COGNITO_CLIENT_ID: "1234567890abcdefghijklmnop",
     COGNITO_DOMAIN: "your-domain.auth.us-east-1.amazoncognito.com",
     
