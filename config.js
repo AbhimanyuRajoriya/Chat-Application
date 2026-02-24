@@ -13,8 +13,8 @@ const CONFIG = {
     // API_REST_ENDPOINT: "http://localhost:8000",
     
     // For production (CloudFront):
-    API_GATEWAY_ENDPOINT: "wss://your-cloudfront-domain.cloudfront.net",
-    API_REST_ENDPOINT: "https://your-cloudfront-domain.cloudfront.net",
+    API_GATEWAY_ENDPOINT: "wss://13.218.244.88:8000/ws",
+    API_REST_ENDPOINT: "https://13.218.244.88:8000",
     
     // WebSocket configuration
     WEBSOCKET_RECONNECT_DELAY: 3000,  // 3 seconds
