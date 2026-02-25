@@ -5,7 +5,7 @@ const CONFIG = {
     COGNITO_REGION: "us-east-1",
     COGNITO_USER_POOL_ID: "us-east-1_RC8qQwJhl",
     COGNITO_CLIENT_ID: "4ks52pngn4nvenaqtup1ogjhod",
-    COGNITO_DOMAIN: "us-east-1rc8qqwjhl.auth.us-east-1.amazoncognito.com",
+    COGNITO_DOMAIN: "us-east-1-rc8qqwjhl.auth.us-east-1.amazoncognito.com",
     
     // Backend API
     // For local development:
