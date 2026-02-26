@@ -52,7 +52,7 @@ class ChatApp {
     initializeUsername() {
         let username = localStorage.getItem("username");
         if (!username) {
-            username = this.generateUsername();
+            username = `User_${Math.floor(Math.random() * 9000) + 1000}`;
             localStorage.setItem("username", username);
         }
         return username;
