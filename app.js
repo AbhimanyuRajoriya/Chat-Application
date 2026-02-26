@@ -151,7 +151,7 @@ class ChatApp {
 
         this.websocket.onmessage = (event) => {
             const data = JSON.parse(event.data);
-            this.handleMessageReceived(data);  // ✅ CORRECT NAME
+            this.handleMessageReceived(data);
         };
 
         this.websocket.onerror = (error) => {
