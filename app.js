@@ -51,103 +51,20 @@ class ChatApp {
     
     initializeUsername() {
         let username = localStorage.getItem("username");
-
-        if (!username) {
-            const token = this.getToken(); // full JWT
-            if (token) {
-                try {
-                    const parts = token.split('.');
-                    if (parts.length >= 2) {
-                        const payloadBase64 = parts[1];
-                        const decodedJson = atob(payloadBase64.replace(/-/g, '+').replace(/_/g, '/'));
-                        const decoded = JSON.parse(decodedJson);
-                        username = decoded.username || decoded['cognito:username'];
-                    }
-                } catch (e) {
-                    console.warn("⚠️ Could not decode token", e);
-                }
-            }
-        }
-
         if (!username) {
             username = this.generateUsername();
+            localStorage.setItem("username", username);
         }
-
-        localStorage.setItem("username", username);
         return username;
     }
     
-    generateUsername() {
-        const randomId = Math.floor(Math.random() * 9000) + 1000;
-        return `User_${randomId}`;
-    }
-    
     getToken() {
-        /**
-         * GET TOKEN - CRITICAL FUNCTION
-         * Gets or creates a proper JWT token with 3 parts: header.payload.signature
-         */
+        // just return a dummy token
         let token = localStorage.getItem("token");
-        
-        // Check if token is broken (doesn't have 3 parts)
-        if (token) {
-            const tokenParts = token.split('.');
-            if (tokenParts.length !== 3) {
-                console.warn("⚠️ OLD BROKEN TOKEN DETECTED - Clearing and regenerating");
-                localStorage.removeItem("token");
-                token = null;
-            }
-        }
-        
-        if (!token) {
-            const params = new URLSearchParams(window.location.search);
-            token = params.get("token"); // full JWT from query
-        }
-        
-        if (!token) {
-            token = this.generateMockToken(this.username);
-        }
-        
-        // Final validation
-        const tokenParts = token.split('.');
-        if (tokenParts.length !== 3) {
-            console.warn("⚠️ Invalid token format detected, generating new one");
-            token = this.generateMockToken(this.username);
-        }
-        
-        localStorage.setItem("token", token);
+        if (!token) token = this.generateMockToken(this.username);
         return token;
     }
     
-    generateMockToken(username) {
-        /**
-         * Generate a properly structured JWT-like token (header.payload.signature)
-         * All parts must be base64url encoded for proper JWT format
-         */
-        const header = this.base64urlEncode(JSON.stringify({
-            alg: "HS256",
-            typ: "JWT"
-        }));
-
-        const payload = this.base64urlEncode(JSON.stringify({
-            sub: `user-${Date.now()}`,
-            username: username,
-            'cognito:username': username,
-            iss: `https://cognito-idp.${CONFIG.COGNITO_REGION}.amazonaws.com/${CONFIG.COGNITO_USER_POOL_ID}`,
-            aud: CONFIG.COGNITO_CLIENT_ID,
-            token_use: "id",
-            auth_time: Math.floor(Date.now() / 1000),
-            exp: Math.floor(Date.now() / 1000) + 86400
-        }));
-
-        // Create a proper signature (base64url encoded)
-        const signature = this.base64urlEncode("mock_signature_for_dev_mode");
-
-        const token = `${header}.${payload}.${signature}`;
-        console.log(`✅ Generated NEW mock token with ${token.split('.').length} parts for user: ${username}`);
-        console.log(`🔐 Token: ${token.substring(0, 50)}...${token.substring(token.length - 20)}`);
-        return token;
-    }
 
     base64urlEncode(str) {
         /**
