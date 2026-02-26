@@ -89,6 +89,16 @@ class ChatApp {
          */
         let token = localStorage.getItem("token");
         
+        // Check if token is broken (doesn't have 3 parts)
+        if (token) {
+            const tokenParts = token.split('.');
+            if (tokenParts.length !== 3) {
+                console.warn("⚠️ OLD BROKEN TOKEN DETECTED - Clearing and regenerating");
+                localStorage.removeItem("token");
+                token = null;
+            }
+        }
+        
         if (!token) {
             const params = new URLSearchParams(window.location.search);
             token = params.get("token"); // full JWT from query
@@ -98,7 +108,7 @@ class ChatApp {
             token = this.generateMockToken(this.username);
         }
         
-        // Validate token has 3 parts (header.payload.signature)
+        // Final validation
         const tokenParts = token.split('.');
         if (tokenParts.length !== 3) {
             console.warn("⚠️ Invalid token format detected, generating new one");
@@ -134,7 +144,8 @@ class ChatApp {
         const signature = this.base64urlEncode("mock_signature_for_dev_mode");
 
         const token = `${header}.${payload}.${signature}`;
-        console.log(`✅ Generated mock token with ${token.split('.').length} parts`);
+        console.log(`✅ Generated NEW mock token with ${token.split('.').length} parts for user: ${username}`);
+        console.log(`🔐 Token: ${token.substring(0, 50)}...${token.substring(token.length - 20)}`);
         return token;
     }
 
@@ -154,8 +165,12 @@ class ChatApp {
     }
     
     connectWebSocket() {
-        const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${encodeURIComponent(this.token)}`;
-        console.log("📡 Connecting WebSocket:", wsUrl.substring(0, 100) + "...");
+        // ⚠️ CRITICAL: Do NOT URL-encode the token - it breaks the JWT dots
+        // Instead, pass it as a plain query parameter (dots are safe in query strings)
+        const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${this.token}`;
+        console.log("📡 Connecting WebSocket to:", CONFIG.API_GATEWAY_ENDPOINT);
+        console.log("📡 Room:", this.currentRoom);
+        console.log("🔐 Token parts:", this.token.split('.').length);
 
         this.websocket = new WebSocket(wsUrl);
 
