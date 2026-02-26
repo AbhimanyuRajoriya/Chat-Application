@@ -101,9 +101,14 @@ class ChatApp {
     
     generateMockToken(username) {
         /**
-         * Generate JWT-like token for authentication
+         * Generate a properly structured JWT-like token (header.payload.signature)
          */
-        const mockToken = btoa(JSON.stringify({
+        const header = btoa(JSON.stringify({
+            alg: "HS256",
+            typ: "JWT"
+        })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+        const payload = btoa(JSON.stringify({
             sub: `user-${Date.now()}`,
             username: username,
             'cognito:username': username,
@@ -112,9 +117,11 @@ class ChatApp {
             token_use: "id",
             auth_time: Math.floor(Date.now() / 1000),
             exp: Math.floor(Date.now() / 1000) + 86400
-        }));
-        
-        return mockToken;
+        })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+
+        const signature = "mock_signature";
+
+        return `${header}.${payload}.${signature}`;
     }
     
     showChatUI() {
@@ -124,25 +131,44 @@ class ChatApp {
     
     connectWebSocket() {
         const wsUrl = `wss://d39s9x23h6lb7j.cloudfront.net/ws/${this.currentRoom}?token=${this.token}`;
-
         console.log("Connecting:", wsUrl);
 
         this.websocket = new WebSocket(wsUrl);
 
         this.websocket.onopen = () => {
-            console.log("WebSocket connected");
+            console.log("✅ WebSocket connected");
+            this.isConnected = true;
+            this.reconnectAttempts = 0;
+            this.updateConnectionStatus(true);
+
+            // Flush buffered messages
+            while (this.messageBuffer.length > 0) {
+                const msg = this.messageBuffer.shift();
+                this.websocket.send(JSON.stringify(msg));
+            }
         };
 
         this.websocket.onerror = (e) => {
-            console.log("WebSocket error", e);
+            console.error("❌ WebSocket error", e);
         };
 
         this.websocket.onclose = () => {
-            console.log("WebSocket closed");
+            console.log("📴 WebSocket closed");
+            this.isConnected = false;
+            this.updateConnectionStatus(false);
+
+            if (this.shouldReconnect) {
+                this.attemptReconnect();
+            }
         };
 
         this.websocket.onmessage = (event) => {
-            console.log("Message:", event.data);
+            try {
+                const message = JSON.parse(event.data);
+                this.handleMessageReceived(message);
+            } catch (e) {
+                console.error("❌ Failed to parse message", e);
+            }
         };
     }
     
