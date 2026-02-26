@@ -102,25 +102,25 @@ async def get_room_messages(room_id: str, limit: int = Query(50, ge=1, le=100)):
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Query(None)):
     """
-    WebSocket endpoint for real-time chat
-    Bypasses authentication for demo/student mode
+    WebSocket endpoint for real-time chat (DEV MODE, JWT skipped)
     """
-    # Assign random username for demo
+    # Assign a username in dev mode
+    import random
     username = f"User_{random.randint(1000,9999)}"
     logger.info(f"User {username} assigned for WebSocket connection")
 
+    # Accept the WebSocket
     await manager.connect(websocket, room_id)
-    
+
     try:
-        # Send welcome system message
+        # Send join message
         welcome_msg = {
             "type": "system",
             "text": f"{username} joined the chat",
             "timestamp": datetime.utcnow().isoformat() + "Z"
         }
         await manager.broadcast(json.dumps(welcome_msg), room_id)
-        
-        # Listen for messages
+
         while True:
             data = await websocket.receive_text()
             try:
@@ -128,7 +128,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Qu
                 text = message_data.get("text", "").strip()
                 if not text:
                     continue
-                
+
                 message = ChatMessage(
                     username=username,
                     text=text,
@@ -136,12 +136,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Qu
                     timestamp=datetime.utcnow().isoformat() + "Z"
                 )
 
-                # Store message in DB (optional)
-                await db_manager.store_message(
-                    room_id=message.room_id,
-                    username=message.username,
-                    text=message.text
-                )
+                # Store in DB
+                await db_manager.store_message(room_id=message.room_id, username=message.username, text=message.text)
 
                 # Broadcast
                 broadcast_msg = {
@@ -151,13 +147,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Qu
                     "timestamp": message.timestamp
                 }
                 await manager.broadcast(json.dumps(broadcast_msg), room_id)
-                logger.info(f"Message broadcast - User: {username}, Room: {room_id}")
-                
+
             except json.JSONDecodeError:
                 logger.warning(f"Invalid JSON received from {username}")
             except Exception as e:
                 logger.error(f"Error processing message: {e}")
-    
+
     except WebSocketDisconnect:
         await manager.disconnect(websocket, room_id)
         disconnect_msg = {
@@ -167,7 +162,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Qu
         }
         await manager.broadcast(json.dumps(disconnect_msg), room_id)
         logger.info(f"User {username} disconnected from {room_id}")
-
 # Error handlers
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
