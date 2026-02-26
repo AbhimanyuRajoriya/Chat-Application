@@ -1,4 +1,4 @@
-# app.py - Student / Demo Version
+# app.py - Student / Demo Version (In-Memory Storage)
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -8,8 +8,6 @@ from datetime import datetime
 import random
 import uvicorn
 from config import API_TITLE, API_VERSION, DEBUG, FRONTEND_DOMAIN
-from db import db_manager
-from models import ChatMessage
 
 # Configure logging
 logging.basicConfig(
@@ -18,15 +16,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Connection manager for WebSocket
+# Connection manager
 class ConnectionManager:
-    """Manages WebSocket connections and broadcasting"""
-    
     def __init__(self):
-        self.active_connections: dict = {}  # {room_id: [connection, ...]}
+        self.active_connections: dict = {}  # {room_id: [connections,...]}
     
     async def connect(self, websocket: WebSocket, room_id: str):
-        """Register new WebSocket connection"""
         await websocket.accept()
         if room_id not in self.active_connections:
             self.active_connections[room_id] = []
@@ -34,7 +29,6 @@ class ConnectionManager:
         logger.info(f"Client connected to room: {room_id}")
     
     async def disconnect(self, websocket: WebSocket, room_id: str):
-        """Unregister WebSocket connection"""
         if room_id in self.active_connections:
             self.active_connections[room_id].remove(websocket)
             if not self.active_connections[room_id]:
@@ -42,22 +36,21 @@ class ConnectionManager:
         logger.info(f"Client disconnected from room: {room_id}")
     
     async def broadcast(self, message: str, room_id: str):
-        """Send message to all connected clients in room"""
         if room_id not in self.active_connections:
             return
         disconnected_clients = []
         for connection in self.active_connections[room_id]:
             try:
                 await connection.send_text(message)
-            except Exception as e:
-                logger.error(f"Error sending message: {e}")
+            except:
                 disconnected_clients.append(connection)
-        # Clean up disconnected clients
-        for connection in disconnected_clients:
-            await self.disconnect(connection, room_id)
+        for conn in disconnected_clients:
+            await self.disconnect(conn, room_id)
 
-# Initialize connection manager
 manager = ConnectionManager()
+
+# In-memory message storage: {room_id: [message_dicts,...]}
+memory_store = {}
 
 # FastAPI lifespan
 @asynccontextmanager
@@ -66,113 +59,67 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Application shutdown")
 
-# Create FastAPI app
-app = FastAPI(
-    title=API_TITLE,
-    version=API_VERSION,
-    lifespan=lifespan
-)
+# Create app
+app = FastAPI(title=API_TITLE, version=API_VERSION, lifespan=lifespan)
 
-# CORS middleware
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[FRONTEND_DOMAIN],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
 # Routes
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
     return {"status": "healthy", "version": API_VERSION}
 
 @app.get("/rooms/{room_id}/messages")
 async def get_room_messages(room_id: str, limit: int = Query(50, ge=1, le=100)):
-    """Retrieve message history for a room"""
-    messages = await db_manager.get_messages(room_id, limit)
-    return {
-        "room_id": room_id,
-        "messages": [msg.dict() for msg in messages],
-        "count": len(messages)
-    }
+    messages = memory_store.get(room_id, [])
+    return {"room_id": room_id, "messages": messages[-limit:], "count": len(messages)}
 
-# WebSocket endpoint (JWT bypass)
+# WebSocket (DEV MODE, no JWT)
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Query(None)):
-    """
-    WebSocket endpoint for real-time chat (DEV MODE, JWT skipped)
-    """
-    # Assign a username in dev mode
-    import random
     username = f"User_{random.randint(1000,9999)}"
     logger.info(f"User {username} assigned for WebSocket connection")
-
-    # Accept the WebSocket
+    
     await manager.connect(websocket, room_id)
-
+    
+    # Send join message
+    join_msg = {"type": "system", "text": f"{username} joined the chat", "timestamp": datetime.utcnow().isoformat()+"Z"}
+    memory_store.setdefault(room_id, []).append(join_msg)
+    await manager.broadcast(json.dumps(join_msg), room_id)
+    
     try:
-        # Send join message
-        welcome_msg = {
-            "type": "system",
-            "text": f"{username} joined the chat",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
-        }
-        await manager.broadcast(json.dumps(welcome_msg), room_id)
-
         while True:
             data = await websocket.receive_text()
             try:
-                message_data = json.loads(data)
-                text = message_data.get("text", "").strip()
+                msg_json = json.loads(data)
+                text = msg_json.get("text","").strip()
                 if not text:
                     continue
-
-                message = ChatMessage(
-                    username=username,
-                    text=text,
-                    room_id=room_id,
-                    timestamp=datetime.utcnow().isoformat() + "Z"
-                )
-
-                # Store in DB
-                await db_manager.store_message(room_id=message.room_id, username=message.username, text=message.text)
-
-                # Broadcast
-                broadcast_msg = {
-                    "type": "message",
-                    "username": message.username,
-                    "text": message.text,
-                    "timestamp": message.timestamp
-                }
-                await manager.broadcast(json.dumps(broadcast_msg), room_id)
-
+                message = {"type":"message","username":username,"text":text,"timestamp":datetime.utcnow().isoformat()+"Z"}
+                memory_store.setdefault(room_id, []).append(message)
+                await manager.broadcast(json.dumps(message), room_id)
             except json.JSONDecodeError:
-                logger.warning(f"Invalid JSON received from {username}")
-            except Exception as e:
-                logger.error(f"Error processing message: {e}")
-
+                logger.warning(f"Invalid JSON from {username}")
     except WebSocketDisconnect:
         await manager.disconnect(websocket, room_id)
-        disconnect_msg = {
-            "type": "system",
-            "text": f"{username} left the chat",
-            "timestamp": datetime.utcnow().isoformat() + "Z"
-        }
-        await manager.broadcast(json.dumps(disconnect_msg), room_id)
+        leave_msg = {"type":"system","text":f"{username} left the chat","timestamp":datetime.utcnow().isoformat()+"Z"}
+        memory_store.setdefault(room_id, []).append(leave_msg)
+        await manager.broadcast(json.dumps(leave_msg), room_id)
         logger.info(f"User {username} disconnected from {room_id}")
-# Error handlers
+
+# Global exception
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     logger.error(f"Unhandled exception: {exc}")
-    return {"error": "Internal server error"}
+    return {"error":"Internal server error"}
 
-# Run server
+# Run
 if __name__ == "__main__":
-    uvicorn.run(
-        app,
-        host="0.0.0.0",
-        port=8000,
-        reload=DEBUG
-    )
+    uvicorn.run(app, host="0.0.0.0", port=8000, reload=DEBUG)
