@@ -12,7 +12,7 @@ services:
       - COGNITO_REGION=us-east-1
       - COGNITO_USER_POOL_ID=us-east-1_RC8qQwJhl
       - COGNITO_CLIENT_ID=4ks52pngn4nvenaqtup1ogjhod
-      - DYNAMODB_TABLE=chat_messages
+      - DYNAMODB_TABLE=chat_message
       - DYNAMODB_REGION=us-east-1
       - FRONTEND_DOMAIN=http://localhost:3000
       # AWS credentials (if using local DynamoDB, these can be dummy values)
