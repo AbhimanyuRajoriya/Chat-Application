@@ -121,7 +121,7 @@ class ChatApp {
     }
     
     connectWebSocket() {
-        const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${this.token}`;
+        const wsUrl = `wss://d39s9x23h6lb7j.cloudfront.net/ws/${this.currentRoom}?token=${this.token}`;
 
         console.log("Connecting:", wsUrl);
 
