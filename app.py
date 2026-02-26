@@ -109,6 +109,7 @@ async def get_room_messages(room_id: str, limit: int = Query(50, ge=1, le=100)):
 
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Query(None)):
+    await websocket.accept()
     """
     WebSocket endpoint for real-time chat
     
