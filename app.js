@@ -121,36 +121,26 @@ class ChatApp {
     }
     
     connectWebSocket() {
-        let wsUrl;
+        const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${this.token}`;
 
-        wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${this.token}`;
-        console.log("🌍 Production environment");
-
-        console.log("🔗 Connecting to WebSocket:", wsUrl);
+        console.log("Connecting:", wsUrl);
 
         this.websocket = new WebSocket(wsUrl);
 
         this.websocket.onopen = () => {
-            console.log("✅ WebSocket connected");
-            this.isConnected = true;
-            this.reconnectAttempts = 0;
-            this.updateConnectionStatus(true);
-            this.loadMessageHistory();
+            console.log("WebSocket connected");
         };
 
-        this.websocket.onmessage = (event) => {
-            const data = JSON.parse(event.data);
-            this.handleMessageReceived(data);
-        };
-
-        this.websocket.onerror = (error) => {
-            console.error("❌ WebSocket error:", error);
+        this.websocket.onerror = (e) => {
+            console.log("WebSocket error", e);
         };
 
         this.websocket.onclose = () => {
-            console.log("⏹️ WebSocket disconnected");
-            this.updateConnectionStatus(false);
-            this.attemptReconnect();
+            console.log("WebSocket closed");
+        };
+
+        this.websocket.onmessage = (event) => {
+            console.log("Message:", event.data);
         };
     }
     
