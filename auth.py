@@ -1,9 +1,9 @@
 import httpx
 import json
-from jose import jwt, JWTError
-from functools import lru_cache
 import logging
-from config import COGNITO_JWK_URL, COGNITO_REGION, COGNITO_USER_POOL_ID
+from jose import jwt, JWTError
+
+from config import COGNITO_JWK_URL, COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -11,9 +11,8 @@ class CognitoAuthenticator:
     """Handles JWT validation from AWS Cognito"""
     
     def __init__(self):
-        self.jwk_client = None
         self.jwks = None
-    
+
     async def get_jwks(self):
         """Fetch JWK set from Cognito"""
         if self.jwks:
@@ -28,58 +27,42 @@ class CognitoAuthenticator:
         except Exception as e:
             logger.error(f"Error fetching JWKS: {e}")
             raise
-    
+
     async def verify_token(self, token: str) -> dict:
         """
         Verify JWT token from Cognito
         
-        Args:
-            token: JWT token string
-            
         Returns:
-            Dictionary with decoded token data
-            
-        Raises:
-            JWTError: If token is invalid
+            Decoded token payload
         """
         try:
-            # Get JWK set
             jwks = await self.get_jwks()
-            
-            # Get header to find key ID
+
+            # Get unverified header
             unverified_header = jwt.get_unverified_header(token)
             kid = unverified_header.get("kid")
-            
             if not kid:
                 raise JWTError("Token header missing 'kid'")
-            
-            # Find matching key
-            key = None
-            for k in jwks.get("keys", []):
-                if k.get("kid") == kid:
-                    key = k
-                    break
-            
+
+            # Find matching JWK
+            key = next((k for k in jwks.get("keys", []) if k.get("kid") == kid), None)
             if not key:
-                raise JWTError(f"Unable to find a signing key that matches: {kid}")
-            
-            # Verify token
+                raise JWTError(f"No matching JWK found for kid: {kid}")
+
+            # Convert JWK to public key
+            public_key = jwt.algorithms.RSAAlgorithm.from_jwk(json.dumps(key))
+
+            # Decode and verify token
             payload = jwt.decode(
                 token,
-                json.dumps(key),
+                public_key,
                 algorithms=["RS256"],
-                options={"verify_signature": True}
+                audience=COGNITO_APP_CLIENT_ID,
+                issuer=f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}"
             )
-            
-            # Verify token is from correct user pool
-            iss = payload.get("iss")
-            expected_iss = f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}"
-            
-            if iss != expected_iss:
-                raise JWTError(f"Invalid issuer: {iss}")
-            
+
             return payload
-            
+
         except JWTError as e:
             logger.error(f"JWT validation failed: {e}")
             raise
@@ -87,16 +70,15 @@ class CognitoAuthenticator:
             logger.error(f"Token verification error: {e}")
             raise JWTError(f"Token verification failed: {e}")
 
+
 # Global authenticator instance
 authenticator = CognitoAuthenticator()
+
 
 async def get_current_user(token: str) -> dict:
     """
     Dependency for validating JWT tokens
     
-    Args:
-        token: JWT token from WebSocket query parameter
-        
     Returns:
         Decoded token payload with user info
     """
