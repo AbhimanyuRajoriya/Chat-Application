@@ -3,7 +3,7 @@ import json
 import logging
 from jose import jwt, JWTError
 
-from config import COGNITO_JWK_URL, COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_APP_CLIENT_ID
+from config import COGNITO_JWK_URL, COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,7 @@ class CognitoAuthenticator:
                 token,
                 public_key,
                 algorithms=["RS256"],
-                audience=COGNITO_APP_CLIENT_ID,
+                audience=COGNITO_CLIENT_ID,
                 issuer=f"https://cognito-idp.{COGNITO_REGION}.amazonaws.com/{COGNITO_USER_POOL_ID}"
             )
 
