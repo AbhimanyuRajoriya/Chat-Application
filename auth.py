@@ -2,6 +2,8 @@ import httpx
 import json
 import logging
 from jose import jwt, JWTError
+import os
+import base64
 
 from config import COGNITO_JWK_URL, COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID
 
@@ -35,6 +37,22 @@ class CognitoAuthenticator:
         Returns:
             Decoded token payload
         """
+        # ── DEV MODE BYPASS ──────────────────────────────────────────────
+        if os.getenv("SKIP_JWT_VERIFY") == "true":
+            try:
+                parts = token.split('.')
+                if len(parts) < 2:
+                    raise JWTError("Invalid token format")
+                padding = 4 - len(parts[1]) % 4
+                payload = json.loads(
+                    base64.urlsafe_b64decode(parts[1] + '=' * padding)
+                )
+                logger.info(f"⚠️ DEV MODE: Skipping JWT signature verification for user: {payload.get('username') or payload.get('cognito:username')}")
+                return payload
+            except Exception as e:
+                raise JWTError(f"Dev mode token decode failed: {e}")
+        # ─────────────────────────────────────────────────────────────────
+
         try:
             jwks = await self.get_jwks()
 
@@ -69,7 +87,6 @@ class CognitoAuthenticator:
         except Exception as e:
             logger.error(f"Token verification error: {e}")
             raise JWTError(f"Token verification failed: {e}")
-
 
 # Global authenticator instance
 authenticator = CognitoAuthenticator()

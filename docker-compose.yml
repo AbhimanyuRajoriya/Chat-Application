@@ -1,0 +1,3 @@
+# docker-compose.yml
+environment:
+  - SKIP_JWT_VERIFY=true
