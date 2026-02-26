@@ -51,23 +51,25 @@ class ChatApp {
     
     initializeUsername() {
         let username = localStorage.getItem("username");
-        
+
         if (!username) {
-            const token = this.getToken();
+            const token = this.getToken(); // full JWT
             if (token) {
                 try {
-                    const decoded = JSON.parse(atob(token));
+                    const payloadBase64 = token.split('.')[1]; // get payload
+                    const decodedJson = atob(payloadBase64.replace(/-/g, '+').replace(/_/g, '/'));
+                    const decoded = JSON.parse(decodedJson);
                     username = decoded.username || decoded['cognito:username'];
                 } catch (e) {
-                    console.warn("⚠️ Could not decode token");
+                    console.warn("⚠️ Could not decode token", e);
                 }
             }
         }
-        
+
         if (!username) {
             username = this.generateUsername();
         }
-        
+
         localStorage.setItem("username", username);
         return username;
     }
