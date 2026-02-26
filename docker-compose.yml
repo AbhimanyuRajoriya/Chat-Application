@@ -1,3 +1,23 @@
-# docker-compose.yml
-environment:
-  - SKIP_JWT_VERIFY=true
+version: '3.8'
+
+services:
+  chat-backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - SKIP_JWT_VERIFY=true
+      - DEBUG=true
+      - AWS_REGION=us-east-1
+      - COGNITO_REGION=us-east-1
+      - COGNITO_USER_POOL_ID=us-east-1_RC8qQwJhl
+      - COGNITO_CLIENT_ID=4ks52pngn4nvenaqtup1ogjhod
+      - DYNAMODB_TABLE=chat_messages
+      - DYNAMODB_REGION=us-east-1
+      - FRONTEND_DOMAIN=http://localhost:3000
+      # AWS credentials (if using local DynamoDB, these can be dummy values)
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-dummy}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-dummy}
+    volumes:
+      - .:/app
+    command: python app.py

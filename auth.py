@@ -1,9 +1,9 @@
 import httpx
 import json
 import logging
-from jose import jwt, JWTError
 import os
 import base64
+from jose import jwt, JWTError
 
 from config import COGNITO_JWK_URL, COGNITO_REGION, COGNITO_USER_POOL_ID, COGNITO_CLIENT_ID
 
@@ -14,6 +14,9 @@ class CognitoAuthenticator:
     
     def __init__(self):
         self.jwks = None
+        self.dev_mode = os.getenv("SKIP_JWT_VERIFY", "false").lower() == "true"
+        if self.dev_mode:
+            logger.warning("⚠️ DEV MODE ENABLED: JWT signature verification is SKIPPED")
 
     async def get_jwks(self):
         """Fetch JWK set from Cognito"""
@@ -37,22 +40,26 @@ class CognitoAuthenticator:
         Returns:
             Decoded token payload
         """
+        # Validate token has 3 parts
+        parts = token.split('.')
+        if len(parts) != 3:
+            logger.error(f"Invalid token format: expected 3 parts, got {len(parts)}")
+            raise JWTError(f"Invalid token format: {len(parts)} parts instead of 3")
+
         # ── DEV MODE BYPASS ──────────────────────────────────────────────
-        if os.getenv("SKIP_JWT_VERIFY") == "true":
+        if self.dev_mode:
             try:
-                parts = token.split('.')
-                if len(parts) < 2:
-                    raise JWTError("Invalid token format")
-                padding = 4 - len(parts[1]) % 4
-                payload = json.loads(
-                    base64.urlsafe_b64decode(parts[1] + '=' * padding)
-                )
-                logger.info(f"⚠️ DEV MODE: Skipping JWT signature verification for user: {payload.get('username') or payload.get('cognito:username')}")
+                # Decode without verification
+                payload = self._decode_token_payload(token)
+                username = payload.get('username') or payload.get('cognito:username')
+                logger.info(f"✅ DEV MODE: Token decoded successfully for user: {username}")
                 return payload
             except Exception as e:
+                logger.error(f"❌ DEV MODE: Failed to decode token: {e}")
                 raise JWTError(f"Dev mode token decode failed: {e}")
         # ─────────────────────────────────────────────────────────────────
 
+        # Production mode: Verify with Cognito JWKs
         try:
             jwks = await self.get_jwks()
 
@@ -88,6 +95,32 @@ class CognitoAuthenticator:
             logger.error(f"Token verification error: {e}")
             raise JWTError(f"Token verification failed: {e}")
 
+    def _decode_token_payload(self, token: str) -> dict:
+        """
+        Decode JWT payload without verification (dev mode only)
+        """
+        parts = token.split('.')
+        if len(parts) < 2:
+            raise JWTError("Invalid token format")
+        
+        try:
+            # Get payload (second part)
+            payload_b64 = parts[1]
+            
+            # Add padding if needed
+            padding = 4 - len(payload_b64) % 4
+            if padding != 4:
+                payload_b64 += '=' * padding
+            
+            # Decode from base64url
+            payload_json = base64.urlsafe_b64decode(payload_b64)
+            payload = json.loads(payload_json)
+            
+            return payload
+        except Exception as e:
+            raise JWTError(f"Failed to decode payload: {e}")
+
+
 # Global authenticator instance
 authenticator = CognitoAuthenticator()
 
@@ -100,10 +133,10 @@ async def get_current_user(token: str) -> dict:
         Decoded token payload with user info
     """
     payload = await authenticator.verify_token(token)
-    username = payload.get("cognito:username")
+    username = payload.get("cognito:username") or payload.get("username")
     
     if not username:
-        raise JWTError("Token missing cognito:username")
+        raise JWTError("Token missing username")
     
     return {
         "username": username,

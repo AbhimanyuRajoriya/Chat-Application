@@ -8,7 +8,7 @@ class ChatApp {
         console.log(`👤 Username: ${this.username}`);
         
         this.token = this.getToken();
-        console.log(`🔐 Token obtained: ${this.token ? 'Yes' : 'No'}`);
+        console.log(`🔐 Token obtained: ${this.token ? 'Yes (' + this.token.split('.').length + ' parts)' : 'No'}`);
         
         this.currentRoom = CONFIG.DEFAULT_ROOM;
         this.websocket = null;
@@ -56,10 +56,13 @@ class ChatApp {
             const token = this.getToken(); // full JWT
             if (token) {
                 try {
-                    const payloadBase64 = token.split('.')[1];
-                    const decodedJson = atob(payloadBase64.replace(/-/g, '+').replace(/_/g, '/'));
-                    const decoded = JSON.parse(decodedJson);
-                    username = decoded.username || decoded['cognito:username'];
+                    const parts = token.split('.');
+                    if (parts.length >= 2) {
+                        const payloadBase64 = parts[1];
+                        const decodedJson = atob(payloadBase64.replace(/-/g, '+').replace(/_/g, '/'));
+                        const decoded = JSON.parse(decodedJson);
+                        username = decoded.username || decoded['cognito:username'];
+                    }
                 } catch (e) {
                     console.warn("⚠️ Could not decode token", e);
                 }
@@ -82,7 +85,7 @@ class ChatApp {
     getToken() {
         /**
          * GET TOKEN - CRITICAL FUNCTION
-         * Never return null/undefined
+         * Gets or creates a proper JWT token with 3 parts: header.payload.signature
          */
         let token = localStorage.getItem("token");
         
@@ -95,6 +98,13 @@ class ChatApp {
             token = this.generateMockToken(this.username);
         }
         
+        // Validate token has 3 parts (header.payload.signature)
+        const tokenParts = token.split('.');
+        if (tokenParts.length !== 3) {
+            console.warn("⚠️ Invalid token format detected, generating new one");
+            token = this.generateMockToken(this.username);
+        }
+        
         localStorage.setItem("token", token);
         return token;
     }
@@ -102,13 +112,14 @@ class ChatApp {
     generateMockToken(username) {
         /**
          * Generate a properly structured JWT-like token (header.payload.signature)
+         * All parts must be base64url encoded for proper JWT format
          */
-        const header = btoa(JSON.stringify({
+        const header = this.base64urlEncode(JSON.stringify({
             alg: "HS256",
             typ: "JWT"
-        })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+        }));
 
-        const payload = btoa(JSON.stringify({
+        const payload = this.base64urlEncode(JSON.stringify({
             sub: `user-${Date.now()}`,
             username: username,
             'cognito:username': username,
@@ -117,11 +128,24 @@ class ChatApp {
             token_use: "id",
             auth_time: Math.floor(Date.now() / 1000),
             exp: Math.floor(Date.now() / 1000) + 86400
-        })).replace(/=/g, '').replace(/\+/g, '-').replace(/\//g, '_');
+        }));
 
-        const signature = "mock_signature";
+        // Create a proper signature (base64url encoded)
+        const signature = this.base64urlEncode("mock_signature_for_dev_mode");
 
-        return `${header}.${payload}.${signature}`;
+        const token = `${header}.${payload}.${signature}`;
+        console.log(`✅ Generated mock token with ${token.split('.').length} parts`);
+        return token;
+    }
+
+    base64urlEncode(str) {
+        /**
+         * Convert string to base64url format (proper JWT encoding)
+         */
+        return btoa(str)
+            .replace(/\+/g, '-')
+            .replace(/\//g, '_')
+            .replace(/=/g, '');
     }
     
     showChatUI() {
@@ -130,8 +154,8 @@ class ChatApp {
     }
     
     connectWebSocket() {
-        const wsUrl = `wss://d39s9x23h6lb7j.cloudfront.net/ws/${this.currentRoom}?token=${this.token}`;
-        console.log("Connecting:", wsUrl);
+        const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${encodeURIComponent(this.token)}`;
+        console.log("📡 Connecting WebSocket:", wsUrl.substring(0, 100) + "...");
 
         this.websocket = new WebSocket(wsUrl);
 
@@ -183,7 +207,7 @@ class ChatApp {
 
         const delay = CONFIG.WEBSOCKET_RECONNECT_DELAY * this.reconnectAttempts;
 
-        console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+        console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${CONFIG.WEBSOCKET_MAX_RETRIES})`);
 
         setTimeout(() => {
             this.connectWebSocket();
@@ -435,13 +459,13 @@ class ChatApp {
 // Initialize when DOM ready
 document.addEventListener("DOMContentLoaded", () => {
     console.clear();
-    console.log("=" .repeat(50));
+    console.log("=".repeat(50));
     console.log("🚀 CHAT APPLICATION V2.0 STARTING");
-    console.log("=" .repeat(50));
+    console.log("=".repeat(50));
     console.log(`🕐 Time: ${new Date().toISOString()}`);
     console.log(`📍 URL: ${window.location.href}`);
     console.log(`🖥️ Host: ${window.location.hostname}:${window.location.port || 'default'}`);
-    console.log("=" .repeat(50));
+    console.log("=".repeat(50));
     
     window.chatApp = new ChatApp();
     
