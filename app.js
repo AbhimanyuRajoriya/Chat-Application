@@ -56,7 +56,7 @@ class ChatApp {
             const token = this.getToken(); // full JWT
             if (token) {
                 try {
-                    const payloadBase64 = token.split('.')[1]; // get payload
+                    const payloadBase64 = token.split('.')[1];
                     const decodedJson = atob(payloadBase64.replace(/-/g, '+').replace(/_/g, '/'));
                     const decoded = JSON.parse(decodedJson);
                     username = decoded.username || decoded['cognito:username'];
@@ -88,7 +88,7 @@ class ChatApp {
         
         if (!token) {
             const params = new URLSearchParams(window.location.search);
-            token = params.get("token");
+            token = params.get("token"); // full JWT from query
         }
         
         if (!token) {
