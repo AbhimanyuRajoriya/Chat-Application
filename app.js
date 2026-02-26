@@ -133,7 +133,7 @@ class ChatApp {
             console.log("🏠 Local environment");
         } else {
             // Production (CloudFront)
-            wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${this.token}`;
+            wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/${this.currentRoom}?token=${this.token}`;
             console.log("🌍 Production environment");
         }
 

@@ -9,7 +9,7 @@ const CONFIG = {
     
     // Backend API
     // For local development:
-    // API_GATEWAY_ENDPOINT: "ws://54.196.148.112:8000/ws",
+    // API_GATEWAY_ENDPOINT: "ws://54.196.148.112:8000",
     // API_REST_ENDPOINT: "http://54.196.148.112:8000",
     
     // For production (CloudFront):
