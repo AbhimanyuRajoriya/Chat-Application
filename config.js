@@ -13,7 +13,7 @@ const CONFIG = {
     // API_REST_ENDPOINT: "http://54.196.148.112:8000",
     
     // For production (CloudFront):
-    API_GATEWAY_ENDPOINT: "wss://d39s9x23h6lb7j.cloudfront.net/ws",
+    API_GATEWAY_ENDPOINT: "wss://d39s9x23h6lb7j.cloudfront.net",
     API_REST_ENDPOINT: "https://d39s9x23h6lb7j.cloudfront.net",
     
     // WebSocket configuration

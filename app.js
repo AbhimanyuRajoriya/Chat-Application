@@ -121,181 +121,64 @@ class ChatApp {
     }
     
     connectWebSocket() {
-        /**
-         * CONNECT TO WEBSOCKET SERVER
-         * FIXED VERSION WITH PROPER ERROR HANDLING
-         */
-        
-        // Validate prerequisites
-        if (!this.token) {
-            console.error("❌ CRITICAL: No token available");
-            this.showError("Authentication token missing");
-            return;
-        }
-        
-        if (!this.username) {
-            console.error("❌ CRITICAL: No username");
-            this.showError("Username not set");
-            return;
-        }
-        
-        // Build WebSocket URL
         let wsUrl;
-        
-        try {
-            if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-                // Local development
-                wsUrl = `ws://localhost:8000/ws/${this.currentRoom}?token=${this.token}`;
-                console.log("🏠 Local environment detected");
-            } else {
-                // Production
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const host = window.location.host;
-                wsUrl = `${protocol}//${host}/ws/${this.currentRoom}?token=${this.token}`;
-                console.log("🌍 Production environment detected");
-            }
-        } catch (error) {
-            console.error("❌ Error building WebSocket URL:", error);
-            this.showError("Failed to build connection URL");
-            return;
+
+        const isLocal =
+            window.location.hostname === "localhost" ||
+            window.location.hostname === "127.0.0.1";
+
+        if (isLocal) {
+            // Local development
+            wsUrl = `${CONFIG.LOCAL_WS}/ws/${this.currentRoom}?token=${this.token}`;
+            console.log("🏠 Local environment");
+        } else {
+            // Production (CloudFront)
+            wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${this.token}`;
+            console.log("🌍 Production environment");
         }
-        
-        // Log connection attempt (without full token)
-        console.log(`🔗 Attempting WebSocket connection...`);
-        console.log(`📍 URL: ws://.../${this.currentRoom}?token=***`);
-        console.log(`🕐 Timestamp: ${new Date().toISOString()}`);
-        
-        // Create WebSocket connection
-        try {
-            this.websocket = new WebSocket(wsUrl);
-        } catch (error) {
-            console.error("❌ Failed to create WebSocket:", error);
-            console.error("Error details:", {
-                message: error.message,
-                url: wsUrl.split('?')[0]
-            });
-            this.updateConnectionStatus(false);
-            this.attemptReconnect();
-            return;
-        }
-        
-        // WebSocket connection opened
-        this.websocket.onopen = (event) => {
-            console.log("✅ WEBSOCKET CONNECTED!");
-            console.log("📊 Connection info:", {
-                url: event.target.url.split('?')[0],
-                readyState: event.target.readyState,
-                protocol: event.target.protocol
-            });
-            
+
+        console.log("🔗 Connecting to WebSocket:", wsUrl);
+
+        this.websocket = new WebSocket(wsUrl);
+
+        this.websocket.onopen = () => {
+            console.log("✅ WebSocket connected");
             this.isConnected = true;
             this.reconnectAttempts = 0;
             this.updateConnectionStatus(true);
-            
-            // Load messages after connection
-            console.log("📨 Loading message history...");
-            this.loadMessageHistory().catch(err => {
-                console.warn("⚠️ Could not load history:", err);
-            });
-            
-            // Send any buffered messages
-            while (this.messageBuffer.length > 0) {
-                const buffered = this.messageBuffer.shift();
-                this.websocket.send(JSON.stringify(buffered));
-            }
+            this.loadMessageHistory();
         };
-        
-        // Message received from server
+
         this.websocket.onmessage = (event) => {
-            console.log("📨 Message received");
-            try {
-                const message = JSON.parse(event.data);
-                console.log("✅ Parsed message:", {
-                    type: message.type,
-                    username: message.username,
-                    hasText: !!message.text
-                });
-                this.handleMessageReceived(message);
-            } catch (error) {
-                console.error("❌ Error parsing message:", error);
-                console.error("Raw message:", event.data);
-            }
+            const data = JSON.parse(event.data);
+            this.handleMessageReceived(data);  // ✅ CORRECT NAME
         };
-        
-        // WebSocket error
+
         this.websocket.onerror = (error) => {
-            console.error("❌ WEBSOCKET ERROR");
-            console.error("Error object:", {
-                type: error.type || 'unknown',
-                message: error.message || 'No message',
-                timestamp: new Date().toISOString()
-            });
-            
-            if (this.websocket) {
-                console.error("WebSocket state:", {
-                    readyState: this.websocket.readyState,
-                    url: this.websocket.url ? this.websocket.url.split('?')[0] : 'unknown'
-                });
-            }
-            
-            this.isConnected = false;
-            this.updateConnectionStatus(false);
-            this.showError("WebSocket error occurred");
+            console.error("❌ WebSocket error:", error);
         };
-        
-        // WebSocket closed
-        this.websocket.onclose = (event) => {
-            console.log("⏹️ WEBSOCKET CLOSED");
-            console.log("Close info:", {
-                code: event.code,
-                reason: event.reason || 'No reason provided',
-                wasClean: event.wasClean,
-                timestamp: new Date().toISOString()
-            });
-            
-            // Interpret close codes
-            if (event.code === 1000) console.log("ℹ️ Normal closure");
-            if (event.code === 1001) console.log("ℹ️ Going away");
-            if (event.code === 1006) console.log("⚠️ Abnormal closure");
-            if (event.code === 4001) console.log("🔐 Authentication failed");
-            if (event.code === 4002) console.log("🔐 Invalid token");
-            
-            this.isConnected = false;
+
+        this.websocket.onclose = () => {
+            console.log("⏹️ WebSocket disconnected");
             this.updateConnectionStatus(false);
-            
-            // Reconnect if should
-            if (this.shouldReconnect) {
-                this.attemptReconnect();
-            }
+            this.attemptReconnect();
         };
-        
-        console.log("✅ WebSocket event handlers set up");
     }
     
     attemptReconnect() {
-        /**
-         * RECONNECTION LOGIC WITH EXPONENTIAL BACKOFF
-         */
-        
         if (this.reconnectAttempts >= CONFIG.WEBSOCKET_MAX_RETRIES) {
-            console.error("❌ MAX RECONNECTION ATTEMPTS REACHED");
-            console.error(`Failed after ${CONFIG.WEBSOCKET_MAX_RETRIES} attempts`);
+            console.error("❌ Max reconnection attempts reached");
             this.showError("Connection failed. Please refresh the page.");
-            this.shouldReconnect = false;
             return;
         }
-        
+
         this.reconnectAttempts++;
-        
-        // Exponential backoff: 3s, 6s, 9s, 12s, 15s (max)
-        const delayMultiplier = CONFIG.WEBSOCKET_RECONNECT_DELAY;
-        const delay = Math.min(delayMultiplier * this.reconnectAttempts, 30000);
-        
-        console.log(`🔄 RECONNECTION ATTEMPT ${this.reconnectAttempts}/${CONFIG.WEBSOCKET_MAX_RETRIES}`);
-        console.log(`⏱️ Waiting ${delay/1000}s before retry...`);
-        
+
+        const delay = CONFIG.WEBSOCKET_RECONNECT_DELAY * this.reconnectAttempts;
+
+        console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
+
         setTimeout(() => {
-            console.log(`🔗 Attempting reconnection ${this.reconnectAttempts}...`);
             this.connectWebSocket();
         }, delay);
     }
