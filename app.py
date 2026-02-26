@@ -1,12 +1,13 @@
+# app.py - Student / Demo Version
 import logging
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import json
 from datetime import datetime
+import random
 import uvicorn
 from config import API_TITLE, API_VERSION, DEBUG, FRONTEND_DOMAIN
-from auth import authenticator, JWTError
 from db import db_manager
 from models import ChatMessage
 
@@ -27,10 +28,8 @@ class ConnectionManager:
     async def connect(self, websocket: WebSocket, room_id: str):
         """Register new WebSocket connection"""
         await websocket.accept()
-        
         if room_id not in self.active_connections:
             self.active_connections[room_id] = []
-        
         self.active_connections[room_id].append(websocket)
         logger.info(f"Client connected to room: {room_id}")
     
@@ -38,26 +37,21 @@ class ConnectionManager:
         """Unregister WebSocket connection"""
         if room_id in self.active_connections:
             self.active_connections[room_id].remove(websocket)
-            
             if not self.active_connections[room_id]:
                 del self.active_connections[room_id]
-        
         logger.info(f"Client disconnected from room: {room_id}")
     
     async def broadcast(self, message: str, room_id: str):
         """Send message to all connected clients in room"""
         if room_id not in self.active_connections:
             return
-        
         disconnected_clients = []
-        
         for connection in self.active_connections[room_id]:
             try:
                 await connection.send_text(message)
             except Exception as e:
                 logger.error(f"Error sending message: {e}")
                 disconnected_clients.append(connection)
-        
         # Clean up disconnected clients
         for connection in disconnected_clients:
             await self.disconnect(connection, room_id)
@@ -89,7 +83,6 @@ app.add_middleware(
 )
 
 # Routes
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
@@ -105,39 +98,21 @@ async def get_room_messages(room_id: str, limit: int = Query(50, ge=1, le=100)):
         "count": len(messages)
     }
 
-# WebSocket endpoint
-
+# WebSocket endpoint (JWT bypass)
 @app.websocket("/ws/{room_id}")
 async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Query(None)):
     """
     WebSocket endpoint for real-time chat
-    
-    Args:
-        websocket: WebSocket connection
-        room_id: Chat room identifier
-        token: JWT token for authentication (query parameter)
+    Bypasses authentication for demo/student mode
     """
-    
-    # Authenticate token
-    if not token:
-        await websocket.close(code=4001, reason="Missing authentication token")
-        logger.warning(f"WebSocket connection rejected: missing token")
-        return
-    
-    try:
-        user = await authenticator.verify_token(token)
-        username = user.get("username")
-        logger.info(f"User {username} authenticated for WebSocket")
-    except JWTError as e:
-        await websocket.close(code=4001, reason="Invalid authentication token")
-        logger.warning(f"WebSocket connection rejected: {e}")
-        return
-    
-    # Connect user
+    # Assign random username for demo
+    username = f"User_{random.randint(1000,9999)}"
+    logger.info(f"User {username} assigned for WebSocket connection")
+
     await manager.connect(websocket, room_id)
     
     try:
-        # Send initial message
+        # Send welcome system message
         welcome_msg = {
             "type": "system",
             "text": f"{username} joined the chat",
@@ -148,37 +123,33 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Qu
         # Listen for messages
         while True:
             data = await websocket.receive_text()
-            
             try:
                 message_data = json.loads(data)
                 text = message_data.get("text", "").strip()
-                
                 if not text:
                     continue
                 
-                # Create message object
                 message = ChatMessage(
                     username=username,
                     text=text,
                     room_id=room_id,
                     timestamp=datetime.utcnow().isoformat() + "Z"
                 )
-                
-                # Store in DynamoDB
+
+                # Store message in DB (optional)
                 await db_manager.store_message(
                     room_id=message.room_id,
                     username=message.username,
                     text=message.text
                 )
-                
-                # Broadcast to all clients
+
+                # Broadcast
                 broadcast_msg = {
                     "type": "message",
                     "username": message.username,
                     "text": message.text,
                     "timestamp": message.timestamp
                 }
-                
                 await manager.broadcast(json.dumps(broadcast_msg), room_id)
                 logger.info(f"Message broadcast - User: {username}, Room: {room_id}")
                 
@@ -189,8 +160,6 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Qu
     
     except WebSocketDisconnect:
         await manager.disconnect(websocket, room_id)
-        
-        # Send disconnect message
         disconnect_msg = {
             "type": "system",
             "text": f"{username} left the chat",
@@ -200,12 +169,12 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Qu
         logger.info(f"User {username} disconnected from {room_id}")
 
 # Error handlers
-
 @app.exception_handler(Exception)
 async def global_exception_handler(request, exc):
     logger.error(f"Unhandled exception: {exc}")
     return {"error": "Internal server error"}
 
+# Run server
 if __name__ == "__main__":
     uvicorn.run(
         app,
