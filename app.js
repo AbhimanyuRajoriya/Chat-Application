@@ -84,7 +84,7 @@ class ChatApp {
     connectWebSocket() {
         // ⚠️ CRITICAL: Do NOT URL-encode the token - it breaks the JWT dots
         // Instead, pass it as a plain query parameter (dots are safe in query strings)
-        const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?token=${this.token}`;
+        const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}`;
         console.log("📡 Connecting WebSocket to:", CONFIG.API_GATEWAY_ENDPOINT);
         console.log("📡 Room:", this.currentRoom);
         console.log("🔐 Token parts:", this.token.split('.').length);
