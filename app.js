@@ -7,8 +7,6 @@ class ChatApp {
         this.username = this.initializeUsername();
         console.log(`👤 Username: ${this.username}`);
         
-        this.token = this.getToken();
-        console.log(`🔐 Token obtained: ${this.token ? 'Yes (' + this.token.split('.').length + ' parts)' : 'No'}`);
         
         this.currentRoom = CONFIG.DEFAULT_ROOM;
         this.websocket = null;
@@ -57,14 +55,6 @@ class ChatApp {
         }
         return username;
     }
-    
-    getToken() {
-        // just return a dummy token
-        let token = localStorage.getItem("token");
-        if (!token) token = this.generateMockToken(this.username);
-        return token;
-    }
-    
 
     base64urlEncode(str) {
         /**
@@ -87,7 +77,6 @@ class ChatApp {
         const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}`;
         console.log("📡 Connecting WebSocket to:", CONFIG.API_GATEWAY_ENDPOINT);
         console.log("📡 Room:", this.currentRoom);
-        console.log("🔐 Token parts:", this.token.split('.').length);
 
         this.websocket = new WebSocket(wsUrl);
 
@@ -255,7 +244,7 @@ class ChatApp {
             
             const response = await fetch(url, {
                 headers: {
-                    "Authorization": `Bearer ${this.token}`
+                    "Authorization": `Bearer`
                 }
             });
             
