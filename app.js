@@ -61,33 +61,22 @@ class ChatApp {
     }
 
     connectWebSocket() {
-        // Demo mode: no authentication token
-        const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}`;
-        console.log("📡 Connecting WebSocket to:", CONFIG.API_GATEWAY_ENDPOINT);
-        console.log("📡 Room:", this.currentRoom);
-
-        this.websocket = new WebSocket(wsUrl);
-
         this.websocket.onopen = () => {
             console.log("✅ WebSocket connected");
-            this.isConnected = true;
+            this.isConnected = true;          // ✅ CRITICAL
             this.reconnectAttempts = 0;
             this.updateConnectionStatus(true);
 
-            // Flush buffered messages
+            // flush buffered messages
             while (this.messageBuffer.length > 0) {
                 const msg = this.messageBuffer.shift();
                 this.websocket.send(JSON.stringify(msg));
             }
         };
 
-        this.websocket.onerror = (e) => {
-            console.error("❌ WebSocket error", e);
-        };
-
         this.websocket.onclose = () => {
             console.log("📴 WebSocket closed");
-            this.isConnected = false;
+            this.isConnected = false;         // ✅ CRITICAL
             this.updateConnectionStatus(false);
 
             if (this.shouldReconnect) {
@@ -98,10 +87,14 @@ class ChatApp {
         this.websocket.onmessage = (event) => {
             try {
                 const message = JSON.parse(event.data);
-                this.handleMessageReceived(message);
+                this.handleMessageReceived(message);  // ✅ CRITICAL (must call this)
             } catch (e) {
-                console.error("❌ Failed to parse message", e);
+                console.error("❌ Failed to parse message", e, event.data);
             }
+        };
+
+        this.websocket.onerror = (e) => {
+            console.error("❌ WebSocket error", e);
         };
     }
 
