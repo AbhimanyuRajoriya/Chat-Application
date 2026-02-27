@@ -1,4 +1,3 @@
-// app.js (stable - room switching + no reconnect storm + email identity)
 class ChatApp {
   constructor() {
     this.currentRoom = "general";
@@ -8,8 +7,8 @@ class ChatApp {
     this.reconnectAttempts = 0;
     this.reconnectTimer = null;
 
-    // Used to ignore stale events from older sockets
-    this.socketSeq = 0;
+    // unique id for each socket; used to ignore stale callbacks
+    this.wsGen = 0;
 
     this.token = this.getToken() || "dummy";
     this.email = this.emailFromToken(this.token) || "guest@local";
@@ -34,24 +33,19 @@ class ChatApp {
   }
 
   bindEvents() {
-    // Send message via form submit
     this.messageFormEl.addEventListener("submit", (e) => {
       e.preventDefault();
       this.sendMessage();
     });
 
-    // Room switching
     this.roomButtons.forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const room = btn.dataset.room;
-        this.switchRoom(room);
-      });
+      btn.addEventListener("click", () => this.switchRoom(btn.dataset.room));
     });
 
-    // Close socket cleanly on tab close
     window.addEventListener("beforeunload", () => {
       this.manualClose = true;
       this.clearReconnectTimer();
+      this.bumpWsGen(); // invalidate callbacks
       try {
         if (this.websocket) this.websocket.close(1000, "page unload");
       } catch {}
@@ -63,20 +57,18 @@ class ChatApp {
     this.roomNameEl.textContent = this.currentRoom;
 
     this.setStatus("Connecting...", false);
-
     this.loadHistory(this.currentRoom);
     this.connectWebSocket();
   }
 
-  // -------------------------
-  // Token + Email
-  // -------------------------
+  bumpWsGen() {
+    // invalidates callbacks from older sockets
+    this.wsGen += 1;
+  }
+
   getToken() {
-    // Prefer localStorage (stable for CloudFront SPA)
     const stored = localStorage.getItem("id_token");
     if (stored) return stored;
-
-    // Optional fallback if you ever pass ?token=
     const params = new URLSearchParams(window.location.search);
     return params.get("token");
   }
@@ -85,27 +77,19 @@ class ChatApp {
     try {
       const parts = String(token || "").split(".");
       if (parts.length !== 3) return null;
-
-      // base64url -> base64
       const payloadB64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-      const json = JSON.parse(atob(payloadB64));
-
-      // Cognito commonly has "email"
-      const email = (json.email || json["cognito:username"] || "").trim().toLowerCase();
+      const payload = JSON.parse(atob(payloadB64));
+      const email = (payload.email || payload["cognito:username"] || "").trim().toLowerCase();
       return email || null;
     } catch {
       return null;
     }
   }
 
-  // -------------------------
-  // REST history
-  // -------------------------
   async loadHistory(room) {
     try {
       const res = await fetch(`/rooms/${encodeURIComponent(room)}/messages?limit=50`);
       const data = await res.json();
-
       this.messageListEl.innerHTML = "";
       (data.messages || []).forEach((m) => this.renderMessage(m));
     } catch (e) {
@@ -113,24 +97,17 @@ class ChatApp {
     }
   }
 
-  // -------------------------
-  // WebSocket
-  // -------------------------
   wsUrlForRoom(room) {
-    const isHttps = window.location.protocol === "https:";
-    const wsProto = isHttps ? "wss" : "ws";
-
-    // Send email so backend can identify user without username in Cognito
+    const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
     const qs = new URLSearchParams({
       token: this.token || "dummy",
       email: this.email || "guest@local",
     });
-
     return `${wsProto}://${window.location.host}/ws/${encodeURIComponent(room)}?${qs.toString()}`;
   }
 
   connectWebSocket() {
-    // prevent parallel sockets
+    // block if already connecting/open
     if (this.websocket && (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING)) {
       return;
     }
@@ -138,49 +115,44 @@ class ChatApp {
     this.manualClose = false;
     this.clearReconnectTimer();
 
-    const mySeq = ++this.socketSeq; // mark this socket generation
+    const myGen = ++this.wsGen; // this socket's generation id
     const url = this.wsUrlForRoom(this.currentRoom);
 
-    console.log("Connecting WS:", url);
     this.setStatus("Connecting...", false);
 
     const ws = new WebSocket(url);
     this.websocket = ws;
 
     ws.onopen = () => {
-      // Ignore stale events
-      if (mySeq !== this.socketSeq) return;
-
+      if (myGen !== this.wsGen) return; // stale
       this.reconnectAttempts = 0;
       this.setStatus("Connected", true);
     };
 
     ws.onmessage = (event) => {
-      if (mySeq !== this.socketSeq) return;
-
+      if (myGen !== this.wsGen) return; // stale
       try {
         const msg = JSON.parse(event.data);
         this.renderMessage(msg);
       } catch {
-        // If backend ever sends plain text
-        this.renderMessage({ type: "message", email: "system", text: String(event.data), timestamp: new Date().toISOString() });
+        // ignore garbage
       }
     };
 
     ws.onclose = () => {
-      if (mySeq !== this.socketSeq) return;
+      if (myGen !== this.wsGen) return; // stale close from older socket
 
       this.websocket = null;
       this.setStatus("Disconnected", false);
 
-      // If we closed intentionally (room switch / unload), DO NOT reconnect
+      // CRITICAL: do NOT reconnect if we closed for room switch/unload
       if (this.manualClose) return;
 
       this.scheduleReconnect();
     };
 
     ws.onerror = () => {
-      // Let onclose do the reconnect path
+      // let onclose handle it
     };
   }
 
@@ -188,7 +160,7 @@ class ChatApp {
     if (this.reconnectTimer) return;
 
     this.reconnectAttempts += 1;
-    const delay = Math.min(10000, 500 * this.reconnectAttempts); // 0.5s -> 10s max
+    const delay = Math.min(10000, 700 * this.reconnectAttempts);
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -203,42 +175,37 @@ class ChatApp {
     }
   }
 
-  // -------------------------
-  // Room switching
-  // -------------------------
   switchRoom(room) {
     if (!room || room === this.currentRoom) return;
 
-    // UI active state
+    // UI active
     this.roomButtons.forEach((b) => b.classList.toggle("active", b.dataset.room === room));
 
-    // Stop reconnects from old socket
+    // STOP ALL reconnect behavior for this close
     this.manualClose = true;
     this.clearReconnectTimer();
 
-    // Invalidate current socket generation so old callbacks become NO-OP
-    this.socketSeq += 1;
+    // invalidate all old ws handlers
+    this.bumpWsGen();
 
+    // close old socket
     try {
       if (this.websocket) this.websocket.close(1000, "switch room");
     } catch {}
     this.websocket = null;
 
+    // set room + load + connect new socket
     this.currentRoom = room;
     this.roomNameEl.textContent = room;
 
     this.setStatus("Connecting...", false);
-
     this.loadHistory(room);
 
-    // Now connect cleanly for new room
+    // allow reconnect for the NEW socket only
     this.manualClose = false;
     this.connectWebSocket();
   }
 
-  // -------------------------
-  // Send message
-  // -------------------------
   sendMessage() {
     const text = (this.messageInputEl.value || "").trim();
     if (!text) return;
@@ -253,13 +220,8 @@ class ChatApp {
     this.messageInputEl.value = "";
   }
 
-  // -------------------------
-  // Render
-  // -------------------------
   renderMessage(msg) {
     if (!msg) return;
-
-    // Ignore system spam if it ever comes back
     if (msg.type && msg.type !== "message") return;
 
     const who = (msg.email || msg.username || "unknown").toString();
@@ -282,7 +244,6 @@ class ChatApp {
 
   setStatus(text, connected) {
     this.statusTextEl.textContent = text;
-
     if (this.statusIndicatorEl) {
       this.statusIndicatorEl.classList.toggle("connected", !!connected);
       this.statusIndicatorEl.classList.toggle("disconnected", !connected);
