@@ -3,29 +3,28 @@
 class ChatApp {
     constructor() {
         console.log("🚀 Initializing Chat Application...");
-        
+
         this.username = this.initializeUsername();
         console.log(`👤 Username: ${this.username}`);
-        
-        
+
         this.currentRoom = CONFIG.DEFAULT_ROOM;
         this.websocket = null;
         this.isConnected = false;
         this.reconnectAttempts = 0;
         this.shouldReconnect = true;
         this.messageBuffer = []; // Buffer messages while connecting
-        
+
         this.initializeElements();
         this.attachEventListeners();
         this.showChatUI();
-        
+
         console.log("🔄 Loading message history...");
         this.loadMessageHistory().then(() => {
             console.log("📡 Connecting WebSocket...");
             this.connectWebSocket();
         });
     }
-    
+
     initializeElements() {
         // Chat elements
         this.chatContainer = document.getElementById("chatContainer");
@@ -39,14 +38,14 @@ class ChatApp {
         this.roomButtons = document.querySelectorAll(".room-btn");
         this.loadingSpinner = document.getElementById("loadingSpinner");
     }
-    
+
     attachEventListeners() {
         this.messageForm.addEventListener("submit", (e) => this.handleSendMessage(e));
         this.roomButtons.forEach(btn => {
             btn.addEventListener("click", () => this.switchRoom(btn.dataset.room));
         });
     }
-    
+
     initializeUsername() {
         let username = localStorage.getItem("username");
         if (!username) {
@@ -56,24 +55,13 @@ class ChatApp {
         return username;
     }
 
-    base64urlEncode(str) {
-        /**
-         * Convert string to base64url format (proper JWT encoding)
-         */
-        return btoa(str)
-            .replace(/\+/g, '-')
-            .replace(/\//g, '_')
-            .replace(/=/g, '');
-    }
-    
     showChatUI() {
         this.chatContainer.style.display = "flex";
         this.currentUserSpan.textContent = `👤 ${this.username}`;
     }
-    
+
     connectWebSocket() {
-        // ⚠️ CRITICAL: Do NOT URL-encode the token - it breaks the JWT dots
-        // Instead, pass it as a plain query parameter (dots are safe in query strings)
+        // Demo mode: no authentication token
         const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}`;
         console.log("📡 Connecting WebSocket to:", CONFIG.API_GATEWAY_ENDPOINT);
         console.log("📡 Room:", this.currentRoom);
@@ -116,7 +104,7 @@ class ChatApp {
             }
         };
     }
-    
+
     attemptReconnect() {
         if (this.reconnectAttempts >= CONFIG.WEBSOCKET_MAX_RETRIES) {
             console.error("❌ Max reconnection attempts reached");
@@ -125,7 +113,6 @@ class ChatApp {
         }
 
         this.reconnectAttempts++;
-
         const delay = CONFIG.WEBSOCKET_RECONNECT_DELAY * this.reconnectAttempts;
 
         console.log(`🔄 Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${CONFIG.WEBSOCKET_MAX_RETRIES})`);
@@ -134,10 +121,10 @@ class ChatApp {
             this.connectWebSocket();
         }, delay);
     }
-    
+
     handleMessageReceived(message) {
         const { type, username, text, timestamp } = message;
-        
+
         if (type === "system") {
             console.log("📢 System message:", text);
             this.displaySystemMessage(text);
@@ -146,61 +133,58 @@ class ChatApp {
             this.displayMessage(username, text, timestamp);
         }
     }
-    
+
     displayMessage(username, text, timestamp) {
         const messageDiv = document.createElement("div");
         messageDiv.className = "message";
-        
+
         if (username === this.username) {
             messageDiv.classList.add("own");
         } else {
             messageDiv.classList.add("other");
         }
-        
+
         const time = new Date(timestamp).toLocaleTimeString('en-US', {
             hour: '2-digit',
             minute: '2-digit',
             second: '2-digit'
         });
-        
+
         messageDiv.innerHTML = `
             <div class="message-content">${this.escapeHtml(text)}</div>
             <div class="message-meta">${username} • ${time}</div>
         `;
-        
+
         this.messageList.appendChild(messageDiv);
         this.messageList.scrollTop = this.messageList.scrollHeight;
-        
+
         // Save to localStorage
         this.saveMessageToLocalStorage(this.currentRoom, username, text, timestamp);
     }
-    
+
     displaySystemMessage(text) {
         const messageDiv = document.createElement("div");
         messageDiv.className = "message system";
         messageDiv.innerHTML = `
             <div class="message-content">${this.escapeHtml(text)}</div>
         `;
-        
+
         this.messageList.appendChild(messageDiv);
         this.messageList.scrollTop = this.messageList.scrollHeight;
     }
-    
+
     async handleSendMessage(e) {
-        /**
-         * SEND MESSAGE - WITH CONNECTION CHECK
-         */
         e.preventDefault();
-        
+
         const text = this.messageInput.value.trim();
         if (!text) return;
-        
+
         // Check connection
         if (!this.isConnected || !this.websocket) {
             console.warn("⚠️ Not connected. Attempting to reconnect...");
             this.showError("Not connected. Reconnecting...");
             this.connectWebSocket();
-            
+
             // Buffer the message
             this.messageBuffer.push({
                 text: text,
@@ -208,23 +192,23 @@ class ChatApp {
             });
             return;
         }
-        
+
         // Check WebSocket is OPEN
         if (this.websocket.readyState !== WebSocket.OPEN) {
             console.warn("⚠️ WebSocket not OPEN. State:", this.websocket.readyState);
             this.showError("Connection not ready. Please try again.");
             return;
         }
-        
+
         try {
             const message = {
                 text: text,
                 room_id: this.currentRoom
             };
-            
+
             this.websocket.send(JSON.stringify(message));
             console.log("✅ Message sent successfully");
-            
+
             this.messageInput.value = "";
             this.messageInput.focus();
         } catch (error) {
@@ -232,31 +216,28 @@ class ChatApp {
             this.showError("Failed to send message");
         }
     }
-    
+
     async loadMessageHistory() {
         /**
          * LOAD MESSAGE HISTORY - PRIMARY AND FALLBACK
          */
         try {
             const url = `${CONFIG.API_REST_ENDPOINT}/rooms/${this.currentRoom}/messages?limit=${CONFIG.MESSAGE_LOAD_LIMIT}`;
-            
+
             console.log(`📨 Fetching messages from: ${this.currentRoom}`);
-            
-            const response = await fetch(url, {
-                headers: {
-                    "Authorization": `Bearer`
-                }
-            });
-            
+
+            // ✅ No auth header in demo mode
+            const response = await fetch(url);
+
             if (!response.ok) {
                 throw new Error(`HTTP ${response.status}`);
             }
-            
+
             const data = await response.json();
-            
+
             // Clear messages
             this.messageList.innerHTML = "";
-            
+
             // Load messages
             if (data.messages && data.messages.length > 0) {
                 console.log(`✅ Loaded ${data.messages.length} messages from server`);
@@ -274,16 +255,16 @@ class ChatApp {
             this.loadFromLocalStorage();
         }
     }
-    
+
     loadFromLocalStorage() {
         try {
             const storageKey = `chat_history_${this.currentRoom}`;
             const saved = localStorage.getItem(storageKey);
-            
+
             if (saved) {
                 const messages = JSON.parse(saved);
                 console.log(`✅ Loaded ${messages.length} messages from localStorage`);
-                
+
                 this.messageList.innerHTML = "";
                 messages.forEach(msg => {
                     this.displayMessage(msg.username, msg.text, msg.timestamp);
@@ -293,39 +274,39 @@ class ChatApp {
             console.error("❌ Error loading from localStorage:", error);
         }
     }
-    
+
     saveMessageToLocalStorage(roomId, username, text, timestamp) {
         try {
             const storageKey = `chat_history_${roomId}`;
             let messages = [];
-            
+
             const saved = localStorage.getItem(storageKey);
             if (saved) {
                 messages = JSON.parse(saved);
             }
-            
+
             messages.push({ username, text, timestamp });
-            
+
             // Keep only last 100 messages
             if (messages.length > 100) {
                 messages = messages.slice(-100);
             }
-            
+
             localStorage.setItem(storageKey, JSON.stringify(messages));
         } catch (error) {
             console.warn("⚠️ Could not save to localStorage:", error);
         }
     }
-    
+
     switchRoom(roomId) {
         console.log(`🔄 Switching to room: ${roomId}`);
-        
+
         this.roomButtons.forEach(btn => btn.classList.remove("active"));
         document.querySelector(`[data-room="${roomId}"]`).classList.add("active");
-        
+
         this.currentRoom = roomId;
         this.roomNameSpan.textContent = roomId;
-        
+
         // Disconnect old WebSocket
         if (this.websocket) {
             console.log("📴 Closing old connection...");
@@ -333,16 +314,16 @@ class ChatApp {
             this.websocket.close();
             this.shouldReconnect = true;
         }
-        
+
         // Clear messages
         this.messageList.innerHTML = "";
-        
+
         // Load new room
         this.loadMessageHistory().then(() => {
             this.connectWebSocket();
         });
     }
-    
+
     updateConnectionStatus(connected) {
         if (connected) {
             this.statusIndicator.classList.add("connected");
@@ -358,18 +339,18 @@ class ChatApp {
             console.log("❌ CONNECTION STATUS: DISCONNECTED");
         }
     }
-    
+
     showError(message) {
         console.warn("⚠️", message);
         this.statusText.textContent = message;
         this.statusText.style.color = "#f44336";
-        
+
         setTimeout(() => {
             this.statusText.textContent = this.isConnected ? "✅ Connected" : "❌ Disconnected";
             this.statusText.style.color = this.isConnected ? "#4caf50" : "#f44336";
         }, 5000);
     }
-    
+
     escapeHtml(text) {
         const div = document.createElement("div");
         div.textContent = text;
@@ -387,9 +368,9 @@ document.addEventListener("DOMContentLoaded", () => {
     console.log(`📍 URL: ${window.location.href}`);
     console.log(`🖥️ Host: ${window.location.hostname}:${window.location.port || 'default'}`);
     console.log("=".repeat(50));
-    
+
     window.chatApp = new ChatApp();
-    
+
     console.log("✅ Application initialized");
     console.log("💡 Tip: Open DevTools (F12) → Console to see debug logs");
 });
