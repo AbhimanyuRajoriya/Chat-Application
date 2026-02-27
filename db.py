@@ -1,6 +1,9 @@
 import boto3
 import logging
 from datetime import datetime
+
+from boto3.dynamodb.conditions import Key  # ✅ IMPORTANT
+
 from config import DYNAMODB_TABLE, DYNAMODB_REGION, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
 from models import MessageResponse
 
@@ -8,31 +11,22 @@ logger = logging.getLogger(__name__)
 
 class DynamoDBManager:
     """Handles all DynamoDB operations"""
-    
+
     def __init__(self):
+        # If you're using IAM Role on EC2, you should NOT pass access keys.
+        # But keeping your current setup to avoid breaking your env.
         self.dynamodb = boto3.resource(
             "dynamodb",
             region_name=DYNAMODB_REGION,
-            aws_access_key_id=AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=AWS_SECRET_ACCESS_KEY
+            aws_access_key_id=AWS_ACCESS_KEY_ID or None,
+            aws_secret_access_key=AWS_SECRET_ACCESS_KEY or None
         )
         self.table = self.dynamodb.Table(DYNAMODB_TABLE)
-    
+
     async def store_message(self, room_id: str, username: str, text: str) -> bool:
-        """
-        Store chat message in DynamoDB
-        
-        Args:
-            room_id: Chat room identifier
-            username: Sender's username
-            text: Message content
-            
-        Returns:
-            True if successful
-        """
         try:
             timestamp = datetime.utcnow().isoformat() + "Z"
-            
+
             self.table.put_item(
                 Item={
                     "room_id": room_id,
@@ -41,127 +35,80 @@ class DynamoDBManager:
                     "text": text
                 }
             )
-            
-            logger.info(f"Message stored - Room: {room_id}, User: {username}")
+
+            logger.info(f"✅ DynamoDB stored - Room: {room_id}, User: {username}, TS: {timestamp}")
             return True
-            
+
         except Exception as e:
-            logger.error(f"Error storing message: {e}")
+            logger.exception(f"❌ DynamoDB put_item failed: {e}")  # ✅ shows full error
             return False
-    
+
     async def get_messages(self, room_id: str, limit: int = 50) -> list:
-        """
-        Retrieve messages from a room (PERSISTENT - from DynamoDB)
-        
-        Args:
-            room_id: Chat room identifier
-            limit: Maximum messages to retrieve (default 50, max 100)
-            
-        Returns:
-            List of MessageResponse objects (sorted chronologically)
-        """
         try:
-            # Ensure limit is reasonable
             if limit > 100:
                 limit = 100
             if limit < 1:
                 limit = 1
-            
-            # Query DynamoDB for messages in this room
+
             response = self.table.query(
-                KeyConditionExpression="room_id = :room_id",
-                ExpressionAttributeValues={":room_id": room_id},
+                KeyConditionExpression=Key("room_id").eq(room_id),  # ✅ FIX
                 Limit=limit,
-                ScanIndexForward=False  # Most recent first (reverse order)
+                ScanIndexForward=False  # newest first
             )
-            
-            # Convert to MessageResponse objects
-            messages = []
+
             items = response.get("Items", [])
-            
-            # Reverse to get chronological order (oldest first)
-            for item in reversed(items):
-                messages.append(MessageResponse(**item))
-            
+            messages = [MessageResponse(**item) for item in reversed(items)]  # oldest first
+
             logger.info(f"✅ Retrieved {len(messages)} messages from room '{room_id}' (persistent)")
             return messages
-            
+
         except Exception as e:
-            logger.error(f"❌ Error retrieving messages from DynamoDB: {e}")
+            logger.exception(f"❌ Error retrieving messages from DynamoDB: {e}")
             return []
-    
+
     async def get_recent_messages(self, room_id: str, since_timestamp: str = None) -> list:
-        """
-        Get messages since a specific timestamp
-        Useful for incremental updates
-        
-        Args:
-            room_id: Chat room identifier
-            since_timestamp: Only get messages after this timestamp
-            
-        Returns:
-            List of new MessageResponse objects
-        """
         try:
             if since_timestamp:
                 response = self.table.query(
-                    KeyConditionExpression="room_id = :room_id AND #ts > :ts",
-                    ExpressionAttributeNames={"#ts": "timestamp"},
-                    ExpressionAttributeValues={
-                        ":room_id": room_id,
-                        ":ts": since_timestamp
-                    },
+                    KeyConditionExpression=Key("room_id").eq(room_id) & Key("timestamp").gt(since_timestamp),  # ✅ FIX
                     Limit=100,
-                    ScanIndexForward=True  # Oldest first
+                    ScanIndexForward=True  # oldest first
                 )
             else:
                 response = self.table.query(
-                    KeyConditionExpression="room_id = :room_id",
-                    ExpressionAttributeValues={":room_id": room_id},
+                    KeyConditionExpression=Key("room_id").eq(room_id),  # ✅ FIX
                     Limit=100,
                     ScanIndexForward=True
                 )
-            
-            messages = [MessageResponse(**item) for item in response.get("Items", [])]
-            return messages
-            
+
+            return [MessageResponse(**item) for item in response.get("Items", [])]
+
         except Exception as e:
-            logger.error(f"❌ Error retrieving recent messages: {e}")
+            logger.exception(f"❌ Error retrieving recent messages: {e}")
             return []
-    
+
     async def clear_room_messages(self, room_id: str) -> bool:
-        """
-        Delete all messages from a room (for cleanup)
-        
-        Args:
-            room_id: Chat room identifier
-            
-        Returns:
-            True if successful
-        """
         try:
-            # Get all messages in room
             response = self.table.query(
-                KeyConditionExpression="room_id = :room_id",
-                ExpressionAttributeValues={":room_id": room_id}
+                KeyConditionExpression=Key("room_id").eq(room_id)  # ✅ FIX
             )
-            
-            # Delete each message
+
+            items = response.get("Items", [])
+
             with self.table.batch_writer() as batch:
-                for item in response.get("Items", []):
+                for item in items:
                     batch.delete_item(
                         Key={
                             "room_id": item["room_id"],
                             "timestamp": item["timestamp"]
                         }
                     )
-            
-            logger.info(f"✅ Cleared {len(response.get('Items', []))} messages from room '{room_id}'")
+
+            logger.info(f"✅ Cleared {len(items)} messages from room '{room_id}'")
             return True
-            
+
         except Exception as e:
-            logger.error(f"❌ Error clearing room messages: {e}")
+            logger.exception(f"❌ Error clearing room messages: {e}")
             return False
 
-# Global DynamoDB manager instance
 db_manager = DynamoDBManager()

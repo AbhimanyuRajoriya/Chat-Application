@@ -1,23 +1,98 @@
-# app.py - Demo mode (NO JWT, NO DynamoDB) but compatible with your app.js
-import logging
+# app.py - Stable Student/Demo backend (Email identity, No join spam, DynamoDB optional)
+import os
 import json
-import random
-from datetime import datetime
-from contextlib import asynccontextmanager
+import logging
+from datetime import datetime, timezone
+from typing import Dict, List, Optional
 
+import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
 from fastapi.middleware.cors import CORSMiddleware
-import uvicorn
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app-demo")
 
-# -------------------------
-# In-memory storage
-# -------------------------
-rooms: dict[str, list[WebSocket]] = {}        # {room_id: [ws1, ws2]}
-history: dict[str, list[dict]] = {}           # {room_id: [msg_dict, ...]}
+# ----------------------------
+# Optional DynamoDB (safe)
+# ----------------------------
+DYNAMODB_TABLE = os.getenv("DYNAMODB_TABLE", "").strip()
+AWS_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1")).strip()
 
+# ✅ Your DynamoDB table MUST have:
+#   Partition Key: room_id (String)
+#   Sort Key: timestamp (String)
+DDB_PK = os.getenv("DDB_PK", "room_id").strip()
+DDB_SK = os.getenv("DDB_SK", "timestamp").strip()   # ✅ FIXED (was "ts")
+
+ddb_table = None
+if DYNAMODB_TABLE:
+    try:
+        import boto3
+        _ddb = boto3.resource("dynamodb", region_name=AWS_REGION)
+        ddb_table = _ddb.Table(DYNAMODB_TABLE)
+        ddb_table.load()
+        logger.info(f"✅ DynamoDB enabled: table={DYNAMODB_TABLE}, region={AWS_REGION}, PK={DDB_PK}, SK={DDB_SK}")
+    except Exception as e:
+        ddb_table = None
+        logger.error(f"❌ DynamoDB disabled (will use memory). Reason: {e}")
+
+# ----------------------------
+# In-memory fallback
+# ----------------------------
+rooms: Dict[str, List[WebSocket]] = {}
+history: Dict[str, List[dict]] = {}
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+def normalize_email(email: str) -> str:
+    email = (email or "").strip().lower()[:80]
+    return email if email else "guest@local"
+
+async def store_message(room_id: str, msg: dict) -> None:
+    history.setdefault(room_id, []).append(msg)
+    if len(history[room_id]) > 200:
+        history[room_id] = history[room_id][-200:]
+
+    if not ddb_table:
+        return
+
+    try:
+        item = {
+            DDB_PK: room_id,
+            DDB_SK: msg.get("timestamp", now_iso()),
+            "type": msg.get("type", "message"),
+            "email": msg.get("email", "guest@local"),
+            "text": msg.get("text", ""),
+        }
+        ddb_table.put_item(Item=item)
+        logger.info("✅ DynamoDB put_item OK")
+    except Exception as e:
+        logger.error(f"❌ DynamoDB put_item failed (using memory). Reason: {e}")
+
+async def load_messages(room_id: str, limit: int) -> List[dict]:
+    if ddb_table:
+        try:
+            from boto3.dynamodb.conditions import Key
+            resp = ddb_table.query(
+                KeyConditionExpression=Key(DDB_PK).eq(room_id),
+                ScanIndexForward=True,
+                Limit=limit,
+            )
+            items = resp.get("Items", [])
+            out = []
+            for it in items:
+                out.append({
+                    "type": it.get("type", "message"),
+                    "email": it.get("email", "guest@local"),
+                    "text": it.get("text", ""),
+                    "timestamp": it.get(DDB_SK, now_iso()),
+                })
+            return out
+        except Exception as e:
+            logger.error(f"❌ DynamoDB query failed (using memory). Reason: {e}")
+
+    return history.get(room_id, [])[-limit:]
 
 class ConnectionManager:
     async def connect(self, ws: WebSocket, room_id: str):
@@ -33,36 +108,19 @@ class ConnectionManager:
         logger.info(f"Client disconnected from room: {room_id}")
 
     async def broadcast(self, room_id: str, msg: dict):
-        # store history
-        history.setdefault(room_id, []).append(msg)
-
-        # send to all
+        payload = json.dumps(msg)
         dead = []
         for conn in rooms.get(room_id, []):
             try:
-                await conn.send_text(json.dumps(msg))
-            except Exception as e:
-                logger.error(f"Send failed: {e}")
+                await conn.send_text(payload)
+            except Exception:
                 dead.append(conn)
-
-        # cleanup dead sockets
         for conn in dead:
             await self.disconnect(conn, room_id)
 
-
 manager = ConnectionManager()
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    logger.info("Application startup")
-    yield
-    logger.info("Application shutdown")
-
-
-app = FastAPI(title="Chat Demo", version="1.0", lifespan=lifespan)
-
-# CORS: allow all for demo
+app = FastAPI(title="Chat Demo", version="1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -71,47 +129,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
 @app.get("/health")
 async def health():
-    return {"ok": True}
-
+    return {"ok": True, "ddb_enabled": bool(ddb_table), "table": DYNAMODB_TABLE or None}
 
 @app.get("/rooms/{room_id}/messages")
 async def get_room_messages(room_id: str, limit: int = Query(50, ge=1, le=100)):
-    msgs = history.get(room_id, [])
-    return {
-        "room_id": room_id,
-        "messages": msgs[-limit:],
-        "count": len(msgs),
-    }
-
+    msgs = await load_messages(room_id, limit)
+    return {"room_id": room_id, "messages": msgs, "count": len(msgs)}
 
 @app.websocket("/ws/{room_id}")
-async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Query(None)):
-    # token ignored in demo, but kept so your frontend URL doesn't break
-    username = f"User_{random.randint(1000, 9999)}"
-    logger.info(f"User {username} assigned for WebSocket connection")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    room_id: str,
+    email: str = Query("guest@local"),
+    token: Optional[str] = Query(None),  # ignored
+):
+    user_email = normalize_email(email)
+    logger.info(f"WS user email: {user_email} room={room_id}")
 
     await manager.connect(websocket, room_id)
-
-    # join message (what your frontend expects)
-    await manager.broadcast(room_id, {
-        "type": "system",
-        "text": f"{username} joined the chat",
-        "timestamp": datetime.utcnow().isoformat() + "Z",
-    })
 
     try:
         while True:
             raw = await websocket.receive_text()
-            logger.info(f"RAW FROM CLIENT ({username}): {raw}")
 
+            text = ""
             try:
-                data = json.loads(raw)              # your frontend sends JSON
+                data = json.loads(raw)
                 text = (data.get("text") or "").strip()
             except json.JSONDecodeError:
-                # if client sends plain text by mistake
                 text = raw.strip()
 
             if not text:
@@ -119,20 +166,22 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str, token: str = Qu
 
             msg = {
                 "type": "message",
-                "username": username,
+                "email": user_email,
                 "text": text,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": now_iso(),
             }
+
+            await store_message(room_id, msg)
             await manager.broadcast(room_id, msg)
 
     except WebSocketDisconnect:
         await manager.disconnect(websocket, room_id)
-        await manager.broadcast(room_id, {
-            "type": "system",
-            "text": f"{username} left the chat",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-        })
-
+    except Exception as e:
+        logger.error(f"WS error: {e}")
+        try:
+            await manager.disconnect(websocket, room_id)
+        except Exception:
+            pass
 
 if __name__ == "__main__":
-    uvicorn.run("app:app", host="0.0.0.0", port=8000)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)   # ✅ FIXED (was main:app)
