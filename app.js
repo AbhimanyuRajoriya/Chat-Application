@@ -1,35 +1,38 @@
+// app.js (stable - no infinite reconnect, uses email)
 class ChatApp {
   constructor() {
     this.currentRoom = "general";
+
     this.websocket = null;
+    this.isConnected = false;
 
-    this.manualClose = false;
-    this.reconnectAttempts = 0;
+    // IMPORTANT: used to stop old sockets from reconnecting after room switch
+    this.wsGeneration = 0;
+
     this.reconnectTimer = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectDelayMs = 10000;
 
-    // unique id for each socket; used to ignore stale callbacks
-    this.wsGen = 0;
-
+    // Auth
     this.token = this.getToken() || "dummy";
-    this.email = this.emailFromToken(this.token) || "guest@local";
+    this.email = this.getEmailFromToken(this.token) || "guest@local";
 
     this.cacheDom();
     this.bindEvents();
+
     this.init();
   }
 
   cacheDom() {
+    // IDs from your index.html
     this.roomNameEl = document.getElementById("roomName");
     this.currentUserEl = document.getElementById("currentUser");
-
-    this.messageListEl = document.getElementById("messageList");
-    this.messageInputEl = document.getElementById("messageInput");
     this.messageFormEl = document.getElementById("messageForm");
-
+    this.messageInputEl = document.getElementById("messageInput");
+    this.messageListEl = document.getElementById("messageList");
     this.statusTextEl = document.getElementById("statusText");
-    this.statusIndicatorEl = document.querySelector("#connectionStatus .status-indicator");
-
-    this.roomButtons = Array.from(document.querySelectorAll(".room-btn"));
+    this.statusDotEl = document.querySelector(".status-indicator");
+    this.roomButtons = document.querySelectorAll(".room-btn");
   }
 
   bindEvents() {
@@ -39,215 +42,286 @@ class ChatApp {
     });
 
     this.roomButtons.forEach((btn) => {
-      btn.addEventListener("click", () => this.switchRoom(btn.dataset.room));
+      btn.addEventListener("click", () => {
+        const room = btn.dataset.room;
+        this.switchRoom(room);
+
+        // UI active button
+        this.roomButtons.forEach((b) => b.classList.remove("active"));
+        btn.classList.add("active");
+      });
     });
 
     window.addEventListener("beforeunload", () => {
-      this.manualClose = true;
-      this.clearReconnectTimer();
-      this.bumpWsGen(); // invalidate callbacks
-      try {
-        if (this.websocket) this.websocket.close(1000, "page unload");
-      } catch {}
+      this.closeSocketHard(); // no reconnect while leaving
     });
   }
 
   init() {
-    this.currentUserEl.textContent = this.email;
+    this.currentUserEl.textContent = `👤 ${this.email}`;
     this.roomNameEl.textContent = this.currentRoom;
 
-    this.setStatus("Connecting...", false);
     this.loadHistory(this.currentRoom);
-    this.connectWebSocket();
+    this.connectWebSocket(); // initial connect
   }
 
-  bumpWsGen() {
-    // invalidates callbacks from older sockets
-    this.wsGen += 1;
-  }
-
+  // --------------------------
+  // Token / Email
+  // --------------------------
   getToken() {
-    const stored = localStorage.getItem("id_token");
-    if (stored) return stored;
+    // Prefer localStorage (your app already uses it)
+    const ls = localStorage.getItem("id_token");
+    if (ls) return ls;
+
+    // Optional: token= in query
     const params = new URLSearchParams(window.location.search);
     return params.get("token");
   }
 
-  emailFromToken(token) {
+  getEmailFromToken(token) {
     try {
-      const parts = String(token || "").split(".");
+      const parts = token.split(".");
       if (parts.length !== 3) return null;
-      const payloadB64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-      const payload = JSON.parse(atob(payloadB64));
-      const email = (payload.email || payload["cognito:username"] || "").trim().toLowerCase();
-      return email || null;
+
+      const payloadJson = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
+      const payload = JSON.parse(payloadJson);
+
+      // Cognito: email exists if you enabled it
+      const email =
+        payload.email ||
+        payload["cognito:username"] || // sometimes email is stored here
+        payload.username;
+
+      return email ? String(email).toLowerCase() : null;
     } catch {
       return null;
     }
   }
 
-  async loadHistory(room) {
-    try {
-      const res = await fetch(`/rooms/${encodeURIComponent(room)}/messages?limit=50`);
-      const data = await res.json();
-      this.messageListEl.innerHTML = "";
-      (data.messages || []).forEach((m) => this.renderMessage(m));
-    } catch (e) {
-      console.error("History load failed:", e);
+  // --------------------------
+  // API / WS URL helpers
+  // --------------------------
+  apiBase() {
+    // If config.js defines CONFIG.API_BASE, use it; else relative
+    if (window.CONFIG && CONFIG.API_BASE) return CONFIG.API_BASE.replace(/\/$/, "");
+    return ""; // same origin
+  }
+
+  wsBase() {
+    // If config.js defines CONFIG.WS_BASE, use it; else same host/protocol
+    if (window.CONFIG && CONFIG.WS_BASE) return CONFIG.WS_BASE.replace(/\/$/, "");
+
+    const isHttps = window.location.protocol === "https:";
+    const proto = isHttps ? "wss" : "ws";
+    return `${proto}://${window.location.host}`;
+  }
+
+  messagesUrl(room) {
+    return `${this.apiBase()}/rooms/${encodeURIComponent(room)}/messages?limit=50`;
+  }
+
+  wsUrl(room) {
+    // Pass BOTH token and email so backend can store identity properly
+    const t = encodeURIComponent(this.token || "dummy");
+    const e = encodeURIComponent(this.email || "guest@local");
+    return `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${t}&email=${e}`;
+  }
+
+  // --------------------------
+  // Connection status UI
+  // --------------------------
+  setStatus(connected) {
+    this.isConnected = connected;
+    this.statusTextEl.textContent = connected ? "Connected" : "Disconnected";
+    if (this.statusDotEl) {
+      this.statusDotEl.classList.toggle("connected", connected);
+      this.statusDotEl.classList.toggle("disconnected", !connected);
     }
   }
 
-  wsUrlForRoom(room) {
-    const wsProto = window.location.protocol === "https:" ? "wss" : "ws";
-    const qs = new URLSearchParams({
-      token: this.token || "dummy",
-      email: this.email || "guest@local",
-    });
-    return `${wsProto}://${window.location.host}/ws/${encodeURIComponent(room)}?${qs.toString()}`;
+  // --------------------------
+  // History
+  // --------------------------
+  async loadHistory(room) {
+    try {
+      const res = await fetch(this.messagesUrl(room));
+      const data = await res.json();
+
+      this.messageListEl.innerHTML = "";
+      (data.messages || []).forEach((m) => this.renderMessage(m));
+    } catch (err) {
+      console.error("History load failed:", err);
+    }
   }
 
+  // --------------------------
+  // WebSocket core
+  // --------------------------
   connectWebSocket() {
-    // block if already connecting/open
-    if (this.websocket && (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING)) {
+    // prevent parallel sockets
+    if (
+      this.websocket &&
+      (this.websocket.readyState === WebSocket.OPEN ||
+        this.websocket.readyState === WebSocket.CONNECTING)
+    ) {
       return;
     }
 
-    this.manualClose = false;
-    this.clearReconnectTimer();
+    // New generation => old socket reconnects become invalid automatically
+    const myGen = ++this.wsGeneration;
 
-    const myGen = ++this.wsGen; // this socket's generation id
-    const url = this.wsUrlForRoom(this.currentRoom);
-
-    this.setStatus("Connecting...", false);
-
-    const ws = new WebSocket(url);
-    this.websocket = ws;
-
-    ws.onopen = () => {
-      if (myGen !== this.wsGen) return; // stale
-      this.reconnectAttempts = 0;
-      this.setStatus("Connected", true);
-    };
-
-    ws.onmessage = (event) => {
-      if (myGen !== this.wsGen) return; // stale
-      try {
-        const msg = JSON.parse(event.data);
-        this.renderMessage(msg);
-      } catch {
-        // ignore garbage
-      }
-    };
-
-    ws.onclose = () => {
-      if (myGen !== this.wsGen) return; // stale close from older socket
-
-      this.websocket = null;
-      this.setStatus("Disconnected", false);
-
-      // CRITICAL: do NOT reconnect if we closed for room switch/unload
-      if (this.manualClose) return;
-
-      this.scheduleReconnect();
-    };
-
-    ws.onerror = () => {
-      // let onclose handle it
-    };
-  }
-
-  scheduleReconnect() {
-    if (this.reconnectTimer) return;
-
-    this.reconnectAttempts += 1;
-    const delay = Math.min(10000, 700 * this.reconnectAttempts);
-
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      this.connectWebSocket();
-    }, delay);
-  }
-
-  clearReconnectTimer() {
+    // clear any old reconnect timers
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+
+    const url = this.wsUrl(this.currentRoom);
+    console.log("WS connecting:", url);
+
+    this.websocket = new WebSocket(url);
+
+    this.websocket.onopen = () => {
+      // If this isn’t latest generation, close immediately
+      if (myGen !== this.wsGeneration) {
+        try { this.websocket.close(); } catch {}
+        return;
+      }
+
+      this.reconnectAttempts = 0;
+      this.setStatus(true);
+      console.log("WS connected");
+    };
+
+    this.websocket.onmessage = (event) => {
+      if (myGen !== this.wsGeneration) return; // ignore old socket messages
+      try {
+        const msg = JSON.parse(event.data);
+        this.renderMessage(msg);
+      } catch (e) {
+        console.error("Bad WS message:", e, event.data);
+      }
+    };
+
+    this.websocket.onerror = () => {
+      // Let onclose handle retry
+    };
+
+    this.websocket.onclose = () => {
+      // If this socket is not current gen, DO NOTHING (prevents infinite reconnect on room switch)
+      if (myGen !== this.wsGeneration) return;
+
+      this.setStatus(false);
+      console.log("WS closed");
+
+      this.scheduleReconnect(myGen);
+    };
   }
 
+  scheduleReconnect(gen) {
+    // Only reconnect if still current gen
+    if (gen !== this.wsGeneration) return;
+
+    if (this.reconnectTimer) return;
+
+    this.reconnectAttempts += 1;
+    const delay = Math.min(this.maxReconnectDelayMs, 500 * this.reconnectAttempts);
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (gen !== this.wsGeneration) return;
+      this.connectWebSocket();
+    }, delay);
+  }
+
+  closeSocketHard() {
+    // Kill reconnect + invalidate any old handlers
+    this.wsGeneration += 1;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
+    try {
+      if (this.websocket) this.websocket.close();
+    } catch {}
+
+    this.websocket = null;
+    this.setStatus(false);
+  }
+
+  // --------------------------
+  // Room switching
+  // --------------------------
   switchRoom(room) {
     if (!room || room === this.currentRoom) return;
 
-    // UI active
-    this.roomButtons.forEach((b) => b.classList.toggle("active", b.dataset.room === room));
+    // Hard-close current socket and STOP any reconnect from it
+    this.closeSocketHard();
 
-    // STOP ALL reconnect behavior for this close
-    this.manualClose = true;
-    this.clearReconnectTimer();
-
-    // invalidate all old ws handlers
-    this.bumpWsGen();
-
-    // close old socket
-    try {
-      if (this.websocket) this.websocket.close(1000, "switch room");
-    } catch {}
-    this.websocket = null;
-
-    // set room + load + connect new socket
     this.currentRoom = room;
     this.roomNameEl.textContent = room;
 
-    this.setStatus("Connecting...", false);
     this.loadHistory(room);
 
-    // allow reconnect for the NEW socket only
-    this.manualClose = false;
+    // Connect fresh socket for new room
     this.connectWebSocket();
   }
 
+  // --------------------------
+  // Send
+  // --------------------------
   sendMessage() {
     const text = (this.messageInputEl.value || "").trim();
     if (!text) return;
 
     if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
-      this.setStatus("Disconnected", false);
+      this.setStatus(false);
       this.connectWebSocket();
       return;
     }
 
-    this.websocket.send(JSON.stringify({ text, room_id: this.currentRoom }));
+    const payload = JSON.stringify({
+      text,
+      room_id: this.currentRoom,
+    });
+
+    this.websocket.send(payload);
     this.messageInputEl.value = "";
   }
 
+  // --------------------------
+  // Render
+  // --------------------------
   renderMessage(msg) {
     if (!msg) return;
-    if (msg.type && msg.type !== "message") return;
 
-    const who = (msg.email || msg.username || "unknown").toString();
-    const text = (msg.text || "").toString();
+    // support both shapes:
+    // backend old: {type, username, text, timestamp}
+    // backend new: {type, email, text, timestamp}
+    if (msg.type !== "message") return;
+
+    const user = msg.email || msg.username || "unknown";
+    const text = msg.text || "";
     const ts = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : "";
 
-    const row = document.createElement("div");
-    row.className = "message-row";
-    row.innerHTML = `
-      <div class="message-meta">
-        <span class="message-user">${this.escape(who)}</span>
-        <span class="message-time">${this.escape(ts)}</span>
-      </div>
-      <div class="message-text">${this.escape(text)}</div>
+    const div = document.createElement("div");
+    div.className = "message";
+
+    if ((user || "").toLowerCase() === (this.email || "").toLowerCase()) {
+      div.classList.add("own");
+    } else {
+      div.classList.add("other");
+    }
+
+    div.innerHTML = `
+      <div class="message-content">${this.escape(text)}</div>
+      <div class="message-meta">${this.escape(user)} • ${this.escape(ts)}</div>
     `;
 
-    this.messageListEl.appendChild(row);
+    this.messageListEl.appendChild(div);
     this.messageListEl.scrollTop = this.messageListEl.scrollHeight;
-  }
-
-  setStatus(text, connected) {
-    this.statusTextEl.textContent = text;
-    if (this.statusIndicatorEl) {
-      this.statusIndicatorEl.classList.toggle("connected", !!connected);
-      this.statusIndicatorEl.classList.toggle("disconnected", !connected);
-    }
   }
 
   escape(s) {
