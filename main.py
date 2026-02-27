@@ -13,16 +13,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("app-demo")
 
 # ----------------------------
-# Optional DynamoDB (safe)
+# DynamoDB optional
 # ----------------------------
 DYNAMODB_TABLE = os.getenv("DYNAMODB_TABLE", "").strip()
 AWS_REGION = os.getenv("AWS_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1")).strip()
 
-# ✅ Your DynamoDB table MUST have:
-#   Partition Key: room_id (String)
-#   Sort Key: timestamp (String)
+# These MUST match your DynamoDB table keys
 DDB_PK = os.getenv("DDB_PK", "room_id").strip()
-DDB_SK = os.getenv("DDB_SK", "timestamp").strip()   # ✅ FIXED (was "ts")
+DDB_SK = os.getenv("DDB_SK", "timestamp").strip()
 
 ddb_table = None
 if DYNAMODB_TABLE:
@@ -34,7 +32,9 @@ if DYNAMODB_TABLE:
         logger.info(f"✅ DynamoDB enabled: table={DYNAMODB_TABLE}, region={AWS_REGION}, PK={DDB_PK}, SK={DDB_SK}")
     except Exception as e:
         ddb_table = None
-        logger.error(f"❌ DynamoDB disabled (will use memory). Reason: {e}")
+        logger.error(f"❌ DynamoDB disabled (memory-only). Reason: {e}")
+else:
+    logger.warning("⚠️ DynamoDB disabled (memory-only). Set DYNAMODB_TABLE env var to enable persistence.")
 
 # ----------------------------
 # In-memory fallback
@@ -50,6 +50,7 @@ def normalize_email(email: str) -> str:
     return email if email else "guest@local"
 
 async def store_message(room_id: str, msg: dict) -> None:
+    # store in memory always
     history.setdefault(room_id, []).append(msg)
     if len(history[room_id]) > 200:
         history[room_id] = history[room_id][-200:]
@@ -68,7 +69,7 @@ async def store_message(room_id: str, msg: dict) -> None:
         ddb_table.put_item(Item=item)
         logger.info("✅ DynamoDB put_item OK")
     except Exception as e:
-        logger.error(f"❌ DynamoDB put_item failed (using memory). Reason: {e}")
+        logger.error(f"❌ DynamoDB put_item failed (memory-only fallback). Reason: {e}")
 
 async def load_messages(room_id: str, limit: int) -> List[dict]:
     if ddb_table:
@@ -76,7 +77,7 @@ async def load_messages(room_id: str, limit: int) -> List[dict]:
             from boto3.dynamodb.conditions import Key
             resp = ddb_table.query(
                 KeyConditionExpression=Key(DDB_PK).eq(room_id),
-                ScanIndexForward=True,
+                ScanIndexForward=True,   # old->new
                 Limit=limit,
             )
             items = resp.get("Items", [])
@@ -90,7 +91,7 @@ async def load_messages(room_id: str, limit: int) -> List[dict]:
                 })
             return out
         except Exception as e:
-            logger.error(f"❌ DynamoDB query failed (using memory). Reason: {e}")
+            logger.error(f"❌ DynamoDB query failed (memory fallback). Reason: {e}")
 
     return history.get(room_id, [])[-limit:]
 
@@ -131,7 +132,14 @@ app.add_middleware(
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "ddb_enabled": bool(ddb_table), "table": DYNAMODB_TABLE or None}
+    return {
+        "ok": True,
+        "ddb_enabled": bool(ddb_table),
+        "table": DYNAMODB_TABLE or None,
+        "pk": DDB_PK,
+        "sk": DDB_SK,
+        "region": AWS_REGION,
+    }
 
 @app.get("/rooms/{room_id}/messages")
 async def get_room_messages(room_id: str, limit: int = Query(50, ge=1, le=100)):
@@ -184,4 +192,4 @@ async def websocket_endpoint(
             pass
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000)   # ✅ FIXED (was main:app)
+    uvicorn.run("main:app", host="0.0.0.0", port=8000)
