@@ -1,10 +1,3 @@
-// app.js (hard rules)
-// - top corner ALWAYS: "You"
-// - message sender ALWAYS: "Anonymous"
-// - no infinite reconnect on room switch
-// - single instance guard
-// - DOES NOT send email in WS URL (removes guest@local everywhere)
-
 if (window.__CHAT_APP_RUNNING__) {
   console.warn("ChatApp already running - skipping duplicate init");
 } else {
@@ -42,7 +35,7 @@ if (window.__CHAT_APP_RUNNING__) {
       if (this.roomNameEl) this.roomNameEl.textContent = this.currentRoom;
 
       // HARD CODE: top-right always "You"
-      if (this.currentUserEl) this.currentUserEl.textContent = "👤 You";
+      this.currentUserEl.textContent = "👤 You";
 
       this.setStatus(false);
 
