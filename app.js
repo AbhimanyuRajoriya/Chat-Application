@@ -1,212 +1,229 @@
-// app.js - Stable frontend (Email identity, NO JWT)
-
+// app.js (stable)
 class ChatApp {
   constructor() {
-    this.email = this.initEmail();
-    this.currentRoom = CONFIG.DEFAULT_ROOM;
-
+    this.currentRoom = "general";
     this.websocket = null;
+
     this.isConnected = false;
+    this.manualClose = false;
     this.reconnectAttempts = 0;
-    this.shouldReconnect = true;
-    this.messageBuffer = [];
+    this.reconnectTimer = null;
 
-    this.initElements();
-    this.attachEvents();
-    this.showUI();
+    this.username = "Loading..."; // will show email
+    this.token = this.getTokenFromUrl() || "dummy";
 
-    this.loadMessageHistory().then(() => this.connectWebSocket());
+    this.cacheDom();
+    this.bindEvents();
+
+    this.init();
   }
 
-  initElements() {
-    this.chatContainer = document.getElementById("chatContainer");
-    this.messageForm = document.getElementById("messageForm");
-    this.messageInput = document.getElementById("messageInput");
-    this.messageList = document.getElementById("messageList");
-    this.currentUserSpan = document.getElementById("currentUser");
-    this.roomNameSpan = document.getElementById("roomName");
-    this.statusText = document.getElementById("statusText");
-    this.statusIndicator = document.querySelector(".status-indicator");
-    this.roomButtons = document.querySelectorAll(".room-btn");
+  cacheDom() {
+    this.usernameEl = document.getElementById("usernameDisplay");
+    this.roomsListEl = document.getElementById("roomsList");
+    this.currentRoomEl = document.getElementById("currentRoom");
+    this.messagesListEl = document.getElementById("messagesList");
+    this.messageInputEl = document.getElementById("messageInput");
+    this.sendBtnEl = document.getElementById("sendBtn");
+    this.connectionStatusEl = document.getElementById("connectionStatus");
   }
 
-  attachEvents() {
-    this.messageForm.addEventListener("submit", (e) => this.sendMessage(e));
-    this.roomButtons.forEach(btn => {
-      btn.addEventListener("click", () => this.switchRoom(btn.dataset.room));
+  bindEvents() {
+    this.sendBtnEl.addEventListener("click", () => this.sendMessage());
+    this.messageInputEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") this.sendMessage();
+    });
+
+    // Room clicks
+    this.roomsListEl.querySelectorAll(".room-item").forEach((li) => {
+      li.addEventListener("click", () => {
+        const room = li.dataset.room;
+        this.switchRoom(room);
+      });
+    });
+
+    window.addEventListener("beforeunload", () => {
+      this.manualClose = true;
+      try {
+        if (this.websocket) this.websocket.close();
+      } catch {}
     });
   }
 
-  initEmail() {
-    let email = localStorage.getItem("email");
-    if (!email) {
-      email = (prompt("Enter your email:") || "").trim().toLowerCase();
-      if (!email || !email.includes("@")) email = "guest@local";
-      localStorage.setItem("email", email);
-    }
-    return email;
+  init() {
+    // email shown in UI = decoded from token (best effort)
+    const email = this.emailFromToken(this.token) || "guest@local";
+    this.username = email;
+    this.usernameEl.textContent = email;
+
+    this.currentRoomEl.textContent = this.currentRoom;
+
+    this.loadHistory(this.currentRoom);
+    this.connectWebSocket();
   }
 
-  showUI() {
-    this.chatContainer.style.display = "flex";
-    this.currentUserSpan.textContent = `📧 ${this.email}`;
-    this.roomNameSpan.textContent = this.currentRoom;
-    this.setStatus(false);
+  getTokenFromUrl() {
+    // your site uses ?code=... normally; but you already log "Token obtained"
+    // If you already have token stored somewhere else, keep it.
+    // For stability: allow token to be injected later, but don't break.
+    const params = new URLSearchParams(window.location.search);
+    // if you have id token in localStorage, use that:
+    return localStorage.getItem("id_token") || params.get("token") || null;
   }
 
-  setStatus(connected) {
-    this.isConnected = connected;
-
-    if (connected) {
-      this.statusIndicator.classList.add("connected");
-      this.statusIndicator.classList.remove("disconnected");
-      this.statusText.textContent = "✅ Connected";
-    } else {
-      this.statusIndicator.classList.remove("connected");
-      this.statusIndicator.classList.add("disconnected");
-      this.statusText.textContent = "❌ Disconnected";
+  emailFromToken(token) {
+    try {
+      const parts = token.split(".");
+      if (parts.length !== 3) return null;
+      const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+      return (payload.email || payload["cognito:username"] || payload.username || "").toLowerCase();
+    } catch {
+      return null;
     }
+  }
+
+  setStatus(text, ok) {
+    this.connectionStatusEl.textContent = text;
+    this.connectionStatusEl.classList.toggle("connected", !!ok);
+    this.connectionStatusEl.classList.toggle("disconnected", !ok);
+  }
+
+  async loadHistory(room) {
+    try {
+      const res = await fetch(`/rooms/${room}/messages?limit=50`);
+      const data = await res.json();
+
+      this.messagesListEl.innerHTML = "";
+      (data.messages || []).forEach((m) => this.renderMessage(m));
+    } catch (e) {
+      console.error("History load failed:", e);
+    }
+  }
+
+  wsUrlForRoom(room) {
+    const isHttps = window.location.protocol === "https:";
+    const wsProto = isHttps ? "wss" : "ws";
+    // use same host (cloudfront) and pass token
+    return `${wsProto}://${window.location.host}/ws/${room}?token=${encodeURIComponent(this.token || "dummy")}`;
   }
 
   connectWebSocket() {
-    // ✅ Guard: don't open multiple sockets
+    // prevent multiple parallel connects
     if (this.websocket && (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING)) {
       return;
     }
-    const email = encodeURIComponent(localStorage.getItem("email") || "guest@local");
-    const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?email=${email}&token=dummy`;
-    console.log("Connecting:", wsUrl);
 
-    this.websocket = new WebSocket(wsUrl);
+    this.manualClose = false;
+
+    const url = this.wsUrlForRoom(this.currentRoom);
+    console.log("Connecting WS:", url);
+
+    this.websocket = new WebSocket(url);
 
     this.websocket.onopen = () => {
-      console.log("✅ WebSocket connected");
+      this.isConnected = true;
       this.reconnectAttempts = 0;
-      this.setStatus(true);
-
-      // flush buffered messages
-      while (this.messageBuffer.length > 0) {
-        const payload = this.messageBuffer.shift();
-        try {
-          this.websocket.send(JSON.stringify(payload));
-        } catch (e) {
-          console.error("Flush send failed:", e);
-        }
-      }
+      this.setStatus("✅ Connected", true);
     };
 
     this.websocket.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === "message") {
-          this.displayMessage(msg.email, msg.text, msg.timestamp);
-        }
+        this.renderMessage(msg);
       } catch (e) {
-        console.error("Bad message:", event.data);
+        console.error("Bad WS message:", e, event.data);
       }
-    };
-
-    this.websocket.onerror = (e) => {
-      console.error("❌ WebSocket error", e);
     };
 
     this.websocket.onclose = () => {
-      console.log("📴 WebSocket closed");
-      this.setStatus(false);
+      this.isConnected = false;
+      this.setStatus("❌ Disconnected", false);
 
-      if (this.shouldReconnect) {
-        this.tryReconnect();
-      }
+      if (this.manualClose) return; // do NOT reconnect if we intentionally closed
+
+      this.scheduleReconnect();
+    };
+
+    this.websocket.onerror = () => {
+      // let onclose handle reconnect
     };
   }
 
-  tryReconnect() {
-    if (this.reconnectAttempts >= CONFIG.WEBSOCKET_MAX_RETRIES) {
-      console.error("Max retries reached");
-      return;
-    }
-    this.reconnectAttempts++;
-    const delay = CONFIG.WEBSOCKET_RECONNECT_DELAY * this.reconnectAttempts;
-    setTimeout(() => this.connectWebSocket(), delay);
+  scheduleReconnect() {
+    if (this.reconnectTimer) return;
+
+    this.reconnectAttempts += 1;
+    const delay = Math.min(10000, 500 * this.reconnectAttempts); // 0.5s, 1s, 1.5s ... max 10s
+
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connectWebSocket();
+    }, delay);
   }
 
-  async loadMessageHistory() {
+  switchRoom(room) {
+    if (!room || room === this.currentRoom) return;
+
+    this.currentRoom = room;
+    this.currentRoomEl.textContent = room;
+
+    // Close existing socket WITHOUT triggering reconnect loop
+    this.manualClose = true;
     try {
-      const url = `${CONFIG.API_REST_ENDPOINT}/rooms/${this.currentRoom}/messages?limit=${CONFIG.MESSAGE_LOAD_LIMIT}`;
-      const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      if (this.websocket) this.websocket.close();
+    } catch {}
+    this.websocket = null;
 
-      this.messageList.innerHTML = "";
-      (data.messages || []).forEach(m => {
-        if (m.type === "message") {
-          this.displayMessage(m.email, m.text, m.timestamp);
-        }
-      });
-    } catch (e) {
-      console.warn("History load failed:", e.message);
-    }
+    this.isConnected = false;
+    this.setStatus("❌ Disconnected", false);
+
+    // load and connect to new room
+    this.loadHistory(room);
+    this.manualClose = false;
+    this.connectWebSocket();
   }
 
-  displayMessage(email, text, timestamp) {
-    const div = document.createElement("div");
-    div.className = "message";
-    div.classList.add(email === this.email ? "own" : "other");
-
-    const time = new Date(timestamp).toLocaleTimeString();
-
-    div.innerHTML = `
-      <div class="message-content">${this.escapeHtml(text)}</div>
-      <div class="message-meta">${this.escapeHtml(email)} • ${time}</div>
-    `;
-
-    this.messageList.appendChild(div);
-    this.messageList.scrollTop = this.messageList.scrollHeight;
-  }
-
-  async sendMessage(e) {
-    e.preventDefault();
-    const text = this.messageInput.value.trim();
+  sendMessage() {
+    const text = (this.messageInputEl.value || "").trim();
     if (!text) return;
 
-    const payload = { text, room_id: this.currentRoom };
-
-    // ✅ If socket not ready, buffer and reconnect ONCE
-    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN || !this.isConnected) {
-      this.messageBuffer.push(payload);
+    if (!this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+      this.setStatus("❌ Disconnected", false);
       this.connectWebSocket();
       return;
     }
 
-    this.websocket.send(JSON.stringify(payload));
-    this.messageInput.value = "";
-    this.messageInput.focus();
+    const payload = JSON.stringify({ text, room_id: this.currentRoom });
+    this.websocket.send(payload);
+
+    this.messageInputEl.value = "";
   }
 
-  switchRoom(roomId) {
-    if (!roomId || roomId === this.currentRoom) return;
+  renderMessage(msg) {
+    // backend sends: {type, username(email), text, timestamp}
+    if (!msg || msg.type !== "message") return;
 
-    this.roomButtons.forEach(btn => btn.classList.remove("active"));
-    document.querySelector(`[data-room="${roomId}"]`)?.classList.add("active");
+    const user = msg.username || "unknown";
+    const text = msg.text || "";
+    const ts = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : "";
 
-    this.currentRoom = roomId;
-    this.roomNameSpan.textContent = roomId;
+    const li = document.createElement("li");
+    li.className = "message-item";
+    li.innerHTML = `<span class="message-username">${this.escape(user)}</span>
+                    <span class="message-timestamp">${this.escape(ts)}</span>
+                    <div class="message-text">${this.escape(text)}</div>`;
 
-    // ✅ Intentional close without reconnect spam
-    this.shouldReconnect = false;
-    try { this.websocket?.close(); } catch (_) {}
-    this.websocket = null;
-    this.setStatus(false);
-    this.shouldReconnect = true;
-
-    this.messageList.innerHTML = "";
-    this.loadMessageHistory().then(() => this.connectWebSocket());
+    this.messagesListEl.appendChild(li);
+    this.messagesListEl.scrollTop = this.messagesListEl.scrollHeight;
   }
 
-  escapeHtml(text) {
-    const d = document.createElement("div");
-    d.textContent = text;
-    return d.innerHTML;
+  escape(s) {
+    return String(s)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
   }
 }
 
