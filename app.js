@@ -63,11 +63,13 @@ class ChatApp {
     connectWebSocket() {
         this.websocket.onopen = () => {
             console.log("✅ WebSocket connected");
-            this.isConnected = true;          // ✅ CRITICAL
-            this.reconnectAttempts = 0;
-            this.updateConnectionStatus(true);
 
-            // flush buffered messages
+            this.isConnected = true;          // ✅ ADD THIS
+            this.updateConnectionStatus(true); // ✅ ADD THIS (optional but good)
+
+            this.reconnectAttempts = 0;
+
+            // Flush buffered messages (if you have buffer logic)
             while (this.messageBuffer.length > 0) {
                 const msg = this.messageBuffer.shift();
                 this.websocket.send(JSON.stringify(msg));
@@ -76,7 +78,8 @@ class ChatApp {
 
         this.websocket.onclose = () => {
             console.log("📴 WebSocket closed");
-            this.isConnected = false;         // ✅ CRITICAL
+
+            this.isConnected = false;          // ✅ ADD THIS
             this.updateConnectionStatus(false);
 
             if (this.shouldReconnect) {
