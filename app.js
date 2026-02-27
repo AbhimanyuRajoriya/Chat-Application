@@ -1,6 +1,5 @@
-// app.js (final: no infinite reconnect on room switch, single instance guard, uses email)
+// app.js (final - code->token exchange, real email, no infinite reconnect, single instance guard)
 
-// Prevent multiple ChatApp instances (this alone fixes a LOT of reconnect chaos)
 if (window.__CHAT_APP_RUNNING__) {
   console.warn("ChatApp already running - skipping duplicate init");
 } else {
@@ -8,20 +7,20 @@ if (window.__CHAT_APP_RUNNING__) {
 
   class ChatApp {
     constructor() {
-      this.currentRoom = "general";
+      this.currentRoom = (window.CONFIG && CONFIG.DEFAULT_ROOM) || "general";
 
       this.websocket = null;
 
-      // Generation counter: any old socket events become invalid after room switch
+      // Generation counter: invalidates old socket callbacks on room switch
       this.wsGen = 0;
 
       this.reconnectTimer = null;
       this.reconnectAttempts = 0;
       this.maxReconnectDelayMs = 10000;
 
-      // Auth: token + email
-      this.token = this.getToken() || "dummy";
-      this.email = this.getEmailFromToken(this.token) || "guest@local";
+      // Auth
+      this.token = null;  // id_token
+      this.email = "guest@local";
 
       // DOM
       this.roomNameEl = document.getElementById("roomName");
@@ -37,75 +36,24 @@ if (window.__CHAT_APP_RUNNING__) {
       this.init();
     }
 
-    getAuthCode() {
-    const params = new URLSearchParams(window.location.search);
-    return params.get("code");
-    }
-
-    cleanUrlCode() {
-    const url = new URL(window.location.href);
-    url.searchParams.delete("code");
-    window.history.replaceState({}, document.title, url.toString());
-    }
-
-    async exchangeCodeForTokens(code) {
-    // REQUIRED in config.js:
-    // CONFIG.COGNITO_DOMAIN, CONFIG.COGNITO_CLIENT_ID, CONFIG.COGNITO_REDIRECT_URI
-    if (!window.CONFIG || !CONFIG.COGNITO_DOMAIN || !CONFIG.COGNITO_CLIENT_ID || !CONFIG.COGNITO_REDIRECT_URI) {
-        console.error("Missing CONFIG: COGNITO_DOMAIN / COGNITO_CLIENT_ID / COGNITO_REDIRECT_URI");
-        return null;
-    }
-
-    const tokenUrl = `${String(CONFIG.COGNITO_DOMAIN).replace(/\/$/, "")}/oauth2/token`;
-
-    const body = new URLSearchParams();
-    body.set("grant_type", "authorization_code");
-    body.set("client_id", CONFIG.COGNITO_CLIENT_ID);
-    body.set("code", code);
-    body.set("redirect_uri", CONFIG.COGNITO_REDIRECT_URI);
-
-    const res = await fetch(tokenUrl, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-    });
-
-    if (!res.ok) {
-        console.error("Token exchange failed:", res.status, await res.text());
-        return null;
-    }
-
-    return await res.json(); // { id_token, access_token, refresh_token?, ... }
-    }
-
     // --------------------------
-    // Init / UI
+    // Init
     // --------------------------
     async init() {
-    // 1) If we have ?code=..., exchange it ONCE
-        const code = this.getAuthCode();
-        if (code && !localStorage.getItem("id_token")) {
-            const tokens = await this.exchangeCodeForTokens(code);
-            if (tokens && tokens.id_token) {
-            localStorage.setItem("id_token", tokens.id_token);
-            if (tokens.access_token) localStorage.setItem("access_token", tokens.access_token);
-            if (tokens.refresh_token) localStorage.setItem("refresh_token", tokens.refresh_token);
-            this.cleanUrlCode();
-            }
-        }
+      this.roomNameEl.textContent = this.currentRoom;
+      this.setStatus(false);
 
-        // 2) Re-read token and decode email
-        this.token = this.getToken() || "dummy";
-        this.email = this.getEmailFromToken(this.token) || "guest@local";
+      // 1) If we have ?code=..., exchange it to tokens and store.
+      await this.tryExchangeCodeForTokens();
 
-        // 3) UI + connect
-        this.currentUserEl.textContent = `👤 ${this.email}`;
-        this.roomNameEl.textContent = this.currentRoom;
+      // 2) Load token from storage and derive email
+      this.token = this.getIdToken() || "dummy";
+      this.email = this.getEmailFromIdToken(this.token) || "guest@local";
+      this.currentUserEl.textContent = `👤 ${this.email}`;
 
-        this.setStatus(false);
-
-        await this.loadHistory(this.currentRoom);
-        this.connectWebSocket();
+      // 3) Load history and connect WS
+      await this.loadHistory(this.currentRoom);
+      this.connectWebSocket();
     }
 
     bindEvents() {
@@ -126,32 +74,117 @@ if (window.__CHAT_APP_RUNNING__) {
       });
 
       window.addEventListener("beforeunload", () => {
-        this.closeSocketHard(); // stop reconnects on page close
+        this.closeSocketHard();
       });
     }
 
-    setStatus(connected) {
-      this.statusTextEl.textContent = connected ? "Connected" : "Disconnected";
-      if (this.statusDotEl) {
-        this.statusDotEl.classList.toggle("connected", connected);
-        this.statusDotEl.classList.toggle("disconnected", !connected);
+    // --------------------------
+    // Config helpers
+    // --------------------------
+    apiBase() {
+      if (window.CONFIG && CONFIG.API_REST_ENDPOINT) {
+        return String(CONFIG.API_REST_ENDPOINT).replace(/\/$/, "");
+      }
+      return "";
+    }
+
+    wsBase() {
+      // IMPORTANT: WebSocket must NOT be via CloudFront unless you configured it properly for WS.
+      // But since you are already connecting via CloudFront, keep it.
+      if (window.CONFIG && CONFIG.API_GATEWAY_ENDPOINT) {
+        return String(CONFIG.API_GATEWAY_ENDPOINT).replace(/\/$/, "");
+      }
+
+      const isHttps = window.location.protocol === "https:";
+      const proto = isHttps ? "wss" : "ws";
+      return `${proto}://${window.location.host}`;
+    }
+
+    messagesUrl(room) {
+      const limit = (window.CONFIG && CONFIG.MESSAGE_LOAD_LIMIT) || 50;
+      return `${this.apiBase()}/rooms/${encodeURIComponent(room)}/messages?limit=${limit}`;
+    }
+
+    wsUrl(room) {
+      const t = encodeURIComponent(this.token || "dummy");
+      const e = encodeURIComponent(this.email || "guest@local");
+      return `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${t}&email=${e}`;
+    }
+
+    // --------------------------
+    // Cognito Code -> Tokens (FIXES guest@local)
+    // --------------------------
+    getAuthCodeFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      return params.get("code");
+    }
+
+    clearCodeFromUrl() {
+      // remove ?code=... after successful exchange (prevents re-exchange loops)
+      const url = new URL(window.location.href);
+      url.searchParams.delete("code");
+      url.searchParams.delete("state");
+      window.history.replaceState({}, document.title, url.toString());
+    }
+
+    getIdToken() {
+      return localStorage.getItem("id_token");
+    }
+
+    async tryExchangeCodeForTokens() {
+      const code = this.getAuthCodeFromUrl();
+      if (!code) return;
+
+      // If already have a token, don’t re-exchange
+      if (localStorage.getItem("id_token")) {
+        this.clearCodeFromUrl();
+        return;
+      }
+
+      // MUST have Cognito domain + client id
+      if (!window.CONFIG || !CONFIG.COGNITO_DOMAIN || !CONFIG.COGNITO_CLIENT_ID) {
+        console.error("Missing Cognito config - cannot exchange code.");
+        return;
+      }
+
+      try {
+        const tokenUrl = `https://${CONFIG.COGNITO_DOMAIN}/oauth2/token`;
+
+        const redirectUri = window.location.origin; // must match app client callback URL
+        const body = new URLSearchParams({
+          grant_type: "authorization_code",
+          client_id: CONFIG.COGNITO_CLIENT_ID,
+          code: code,
+          redirect_uri: redirectUri
+        });
+
+        const res = await fetch(tokenUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: body.toString()
+        });
+
+        if (!res.ok) {
+          const txt = await res.text();
+          console.error("Token exchange failed:", res.status, txt);
+          return;
+        }
+
+        const data = await res.json();
+
+        // Store tokens
+        if (data.id_token) localStorage.setItem("id_token", data.id_token);
+        if (data.access_token) localStorage.setItem("access_token", data.access_token);
+        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
+
+        this.clearCodeFromUrl();
+        console.log("✅ Code exchanged. Tokens stored.");
+      } catch (e) {
+        console.error("Token exchange error:", e);
       }
     }
 
-    // --------------------------
-    // Token / Email
-    // --------------------------
-    getToken() {
-      // Prefer your stored token
-      const ls = localStorage.getItem("id_token");
-      if (ls) return ls;
-
-      // Optional: token in query
-      const params = new URLSearchParams(window.location.search);
-      return params.get("token");
-    }
-
-    getEmailFromToken(token) {
+    getEmailFromIdToken(token) {
       try {
         const parts = String(token).split(".");
         if (parts.length !== 3) return null;
@@ -159,6 +192,7 @@ if (window.__CHAT_APP_RUNNING__) {
         const payloadJson = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
         const payload = JSON.parse(payloadJson);
 
+        // Cognito email flow: email claim exists when scope includes email and attribute present
         const email =
           payload.email ||
           payload["cognito:username"] ||
@@ -171,35 +205,14 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     // --------------------------
-    // Config helpers
+    // Status UI
     // --------------------------
-    apiBase() {
-      // config.js: CONFIG.API_REST_ENDPOINT
-      if (window.CONFIG && CONFIG.API_REST_ENDPOINT) {
-        return String(CONFIG.API_REST_ENDPOINT).replace(/\/$/, "");
+    setStatus(connected) {
+      this.statusTextEl.textContent = connected ? "Connected" : "Disconnected";
+      if (this.statusDotEl) {
+        this.statusDotEl.classList.toggle("connected", connected);
+        this.statusDotEl.classList.toggle("disconnected", !connected);
       }
-      return ""; // same origin
-    }
-
-    wsBase() {
-      // config.js: CONFIG.WS_ENDPOINT (if you have it)
-      if (window.CONFIG && CONFIG.WS_ENDPOINT) {
-        return String(CONFIG.WS_ENDPOINT).replace(/\/$/, "");
-      }
-
-      const isHttps = window.location.protocol === "https:";
-      const proto = isHttps ? "wss" : "ws";
-      return `${proto}://${window.location.host}`;
-    }
-
-    messagesUrl(room) {
-      return `${this.apiBase()}/rooms/${encodeURIComponent(room)}/messages?limit=50`;
-    }
-
-    wsUrl(room) {
-      const t = encodeURIComponent(this.token || "dummy");
-      const e = encodeURIComponent(this.email || "guest@local");
-      return `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${t}&email=${e}`;
     }
 
     // --------------------------
@@ -218,10 +231,9 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     // --------------------------
-    // WebSocket (NO infinite reconnect)
+    // WebSocket (stable, no infinite reconnect on room switch)
     // --------------------------
     connectWebSocket() {
-      // Don’t open a second WS if already open/connecting
       if (
         this.websocket &&
         (this.websocket.readyState === WebSocket.OPEN ||
@@ -232,7 +244,6 @@ if (window.__CHAT_APP_RUNNING__) {
 
       const myGen = ++this.wsGen;
 
-      // cancel pending reconnect
       if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
@@ -251,7 +262,6 @@ if (window.__CHAT_APP_RUNNING__) {
         }
         this.reconnectAttempts = 0;
         this.setStatus(true);
-        console.log("WS connected");
       };
 
       ws.onmessage = (event) => {
@@ -264,17 +274,9 @@ if (window.__CHAT_APP_RUNNING__) {
         }
       };
 
-      ws.onerror = () => {
-        // allow onclose to handle it
-      };
-
       ws.onclose = () => {
-        // CRITICAL: if room switched, ignore old close
         if (myGen !== this.wsGen) return;
-
         this.setStatus(false);
-        console.log("WS closed");
-
         this.scheduleReconnect(myGen);
       };
     }
@@ -294,7 +296,6 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     closeSocketHard() {
-      // Invalidate old socket handlers + stop reconnect timer
       this.wsGen += 1;
 
       if (this.reconnectTimer) {
@@ -311,12 +312,11 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     // --------------------------
-    // Room switching
+    // Room switch
     // --------------------------
-    switchRoom(room) {
+    async switchRoom(room) {
       if (!room || room === this.currentRoom) return;
 
-      // hard close current socket (prevents its onclose from reconnecting)
       this.closeSocketHard();
 
       this.currentRoom = room;
@@ -324,7 +324,7 @@ if (window.__CHAT_APP_RUNNING__) {
 
       this.messageListEl.innerHTML = "";
 
-      this.loadHistory(room);
+      await this.loadHistory(room);
       this.connectWebSocket();
     }
 
