@@ -1,8 +1,9 @@
-// app.js (final: fixes guest@local by exchanging Cognito ?code= to id_token)
+// app.js (clean: never shows guest@local anywhere)
 // - single instance guard
 // - no infinite reconnect on room switch
-// - uses Cognito email (from id_token) as identity
-// - expects backend endpoint: GET /auth/exchange?code=...&redirect_uri=...
+// - if email not available => shows "Anonymous" (NOT guest@local)
+// - ws url: does NOT send email param unless we have a real email
+// - messages: if stored sender is guest@local => display "Anonymous"
 
 if (window.__CHAT_APP_RUNNING__) {
   console.warn("ChatApp already running - skipping duplicate init");
@@ -14,17 +15,18 @@ if (window.__CHAT_APP_RUNNING__) {
       this.currentRoom = (window.CONFIG && CONFIG.DEFAULT_ROOM) || "general";
 
       this.websocket = null;
-      this.wsGen = 0; // generation counter to kill old socket reconnects
+      this.wsGen = 0;
 
       this.reconnectTimer = null;
       this.reconnectAttempts = 0;
       this.maxReconnectDelayMs = 10000;
 
-      // Tokens + identity
+      // Tokens
       this.idToken = localStorage.getItem("id_token") || null;
-      this.accessToken = localStorage.getItem("access_token") || null;
 
-      this.email = this.getEmailFromToken(this.idToken) || "guest@local";
+      // Identity (NEVER default to guest@local)
+      this.email = this.getEmailFromToken(this.idToken); // can be null
+      this.displayName = this.safeDisplayName(this.email);
 
       // DOM
       this.roomNameEl = document.getElementById("roomName");
@@ -47,24 +49,30 @@ if (window.__CHAT_APP_RUNNING__) {
       this.roomNameEl.textContent = this.currentRoom;
       this.setStatus(false);
 
-      // 1) If we came from Cognito Hosted UI, we have ?code=
-      //    Exchange code -> tokens -> store -> set email
-      await this.handleAuthCodeIfPresent();
+      // Always show safe name (never guest@local)
+      this.refreshIdentityUI();
 
-      // 2) Update UI with real email (after exchange)
-      this.email = this.getEmailFromToken(localStorage.getItem("id_token")) || "guest@local";
-      this.currentUserEl.textContent = `👤 ${this.email}`;
-
-      // 3) Load messages + connect WS
       await this.loadHistory(this.currentRoom);
       this.connectWebSocket();
     }
 
+    refreshIdentityUI() {
+      // Re-read token in case it was set later
+      this.idToken = localStorage.getItem("id_token") || null;
+      this.email = this.getEmailFromToken(this.idToken);
+      this.displayName = this.safeDisplayName(this.email);
+
+      // UI shows Anonymous if no email
+      if (this.currentUserEl) this.currentUserEl.textContent = `👤 ${this.displayName}`;
+    }
+
     bindEvents() {
-      this.messageFormEl.addEventListener("submit", (e) => {
-        e.preventDefault();
-        this.sendMessage();
-      });
+      if (this.messageFormEl) {
+        this.messageFormEl.addEventListener("submit", (e) => {
+          e.preventDefault();
+          this.sendMessage();
+        });
+      }
 
       this.roomButtons.forEach((btn) => {
         btn.addEventListener("click", () => {
@@ -82,7 +90,7 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     setStatus(connected) {
-      this.statusTextEl.textContent = connected ? "Connected" : "Disconnected";
+      if (this.statusTextEl) this.statusTextEl.textContent = connected ? "Connected" : "Disconnected";
       if (this.statusDotEl) {
         this.statusDotEl.classList.toggle("connected", connected);
         this.statusDotEl.classList.toggle("disconnected", !connected);
@@ -100,13 +108,11 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     wsBase() {
-      // Use config.js gateway endpoint if present, else same host
       if (window.CONFIG && CONFIG.API_GATEWAY_ENDPOINT) {
         return String(CONFIG.API_GATEWAY_ENDPOINT).replace(/\/$/, "");
       }
       const isHttps = window.location.protocol === "https:";
-      const proto = isHttps ? "wss" : "ws";
-      return `${proto}://${window.location.host}`;
+      return `${isHttps ? "wss" : "ws"}://${window.location.host}`;
     }
 
     messagesUrl(room) {
@@ -114,46 +120,28 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     wsUrl(room) {
+      // Token: if missing, use "dummy" but DO NOT attach guest email
       const token = localStorage.getItem("id_token") || "dummy";
-      const email = this.getEmailFromToken(token) || "guest@local";
+      const email = this.getEmailFromToken(token); // null if not real
 
-      // Pass both: backend can store/use email directly
-      return `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+      let url = `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${encodeURIComponent(token)}`;
+
+      // Only attach email param if we actually have a real email
+      if (email) url += `&email=${encodeURIComponent(email)}`;
+
+      return url;
     }
 
     // --------------------------
-    // Auth Code Exchange (THIS FIXES guest@local)
+    // Identity helpers
     // --------------------------
-    async handleAuthCodeIfPresent() {
-      const params = new URLSearchParams(window.location.search);
-      const code = params.get("code");
-      if (!code) return;
+    safeDisplayName(email) {
+      // Hard rule: never show guest@local anywhere
+      if (!email) return "Anonymous";
 
-      try {
-        const redirectUri = window.location.origin;
-
-        // backend should exchange code for tokens
-        const url = `${this.apiBase()}/auth/exchange?code=${encodeURIComponent(code)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
-        const res = await fetch(url);
-
-        if (!res.ok) {
-          console.error("Auth exchange failed:", res.status, await res.text());
-          return;
-        }
-
-        const data = await res.json();
-
-        if (data.id_token) localStorage.setItem("id_token", data.id_token);
-        if (data.access_token) localStorage.setItem("access_token", data.access_token);
-        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
-
-        // Clean URL (remove ?code=...) so refresh doesn’t re-exchange endlessly
-        params.delete("code");
-        const newUrl = `${window.location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
-        window.history.replaceState({}, document.title, newUrl);
-      } catch (e) {
-        console.error("Auth exchange error:", e);
-      }
+      const e = String(email).toLowerCase().trim();
+      if (!e || e === "guest@local") return "Anonymous";
+      return e;
     }
 
     getEmailFromToken(token) {
@@ -170,7 +158,11 @@ if (window.__CHAT_APP_RUNNING__) {
           payload["cognito:username"] ||
           payload.username;
 
-        return email ? String(email).toLowerCase() : null;
+        if (!email) return null;
+
+        const e = String(email).toLowerCase().trim();
+        if (!e || e === "guest@local") return null;
+        return e;
       } catch {
         return null;
       }
@@ -199,9 +191,7 @@ if (window.__CHAT_APP_RUNNING__) {
         this.websocket &&
         (this.websocket.readyState === WebSocket.OPEN ||
           this.websocket.readyState === WebSocket.CONNECTING)
-      ) {
-        return;
-      }
+      ) return;
 
       const myGen = ++this.wsGen;
 
@@ -209,6 +199,9 @@ if (window.__CHAT_APP_RUNNING__) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
+
+      // Refresh UI identity before connecting (in case token was set)
+      this.refreshIdentityUI();
 
       const url = this.wsUrl(this.currentRoom);
       console.log("WS connecting:", url);
@@ -306,21 +299,27 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     // --------------------------
-    // Render
+    // Render (never show guest@local)
     // --------------------------
     renderMessage(msg) {
       if (!msg || msg.type !== "message") return;
 
-      const user = msg.email || msg.username || "unknown";
+      // Backends may send: email or username
+      const rawUser = msg.email || msg.username || "";
+      const user = this.safeDisplayName(rawUser); // converts guest@local -> Anonymous
       const text = msg.text || "";
       const ts = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : "";
 
       const div = document.createElement("div");
       div.className = "message";
 
-      const me = (this.getEmailFromToken(localStorage.getItem("id_token")) || "guest@local").toLowerCase();
-      if (String(user).toLowerCase() === me) div.classList.add("own");
-      else div.classList.add("other");
+      // Own/other only if we have real email AND message has real email
+      const me = this.getEmailFromToken(localStorage.getItem("id_token"));
+      if (me && rawUser && String(rawUser).toLowerCase() === String(me).toLowerCase()) {
+        div.classList.add("own");
+      } else {
+        div.classList.add("other");
+      }
 
       div.innerHTML = `
         <div class="message-content">${this.escape(text)}</div>
