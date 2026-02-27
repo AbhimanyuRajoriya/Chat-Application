@@ -73,8 +73,8 @@ class ChatApp {
     if (this.websocket && (this.websocket.readyState === WebSocket.OPEN || this.websocket.readyState === WebSocket.CONNECTING)) {
       return;
     }
-
-    const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?email=${encodeURIComponent(this.email)}`;
+    const email = encodeURIComponent(localStorage.getItem("email") || "guest@local");
+    const wsUrl = `${CONFIG.API_GATEWAY_ENDPOINT}/ws/${this.currentRoom}?email=${email}&token=dummy`;
     console.log("Connecting:", wsUrl);
 
     this.websocket = new WebSocket(wsUrl);
