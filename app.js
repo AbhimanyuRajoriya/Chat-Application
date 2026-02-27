@@ -1,9 +1,3 @@
-// app.js (final: fixes guest@local by exchanging Cognito ?code= to id_token)
-// - single instance guard
-// - no infinite reconnect on room switch
-// - uses Cognito email (from id_token) as identity
-// - expects backend endpoint: GET /auth/exchange?code=...&redirect_uri=...
-
 if (window.__CHAT_APP_RUNNING__) {
   console.warn("ChatApp already running - skipping duplicate init");
 } else {
