@@ -1,6 +1,9 @@
-// app.js (final - Cognito code exchange + real email + stable WS switching)
+// app.js (final: fixes guest@local by exchanging Cognito ?code= to id_token)
+// - single instance guard
+// - no infinite reconnect on room switch
+// - uses Cognito email (from id_token) as identity
+// - expects backend endpoint: GET /auth/exchange?code=...&redirect_uri=...
 
-// Prevent multiple app instances (CloudFront cache weirdness / duplicate loads)
 if (window.__CHAT_APP_RUNNING__) {
   console.warn("ChatApp already running - skipping duplicate init");
 } else {
@@ -8,18 +11,20 @@ if (window.__CHAT_APP_RUNNING__) {
 
   class ChatApp {
     constructor() {
-      this.currentRoom = (window.CONFIG && CONFIG.DEFAULT_ROOM) ? CONFIG.DEFAULT_ROOM : "general";
+      this.currentRoom = (window.CONFIG && CONFIG.DEFAULT_ROOM) || "general";
 
       this.websocket = null;
-      this.wsGen = 0;
+      this.wsGen = 0; // generation counter to kill old socket reconnects
 
       this.reconnectTimer = null;
       this.reconnectAttempts = 0;
       this.maxReconnectDelayMs = 10000;
 
-      // Auth
-      this.token = this.getIdToken() || null; // id_token
-      this.email = this.getEmailFromJwt(this.token) || "guest@local";
+      // Tokens + identity
+      this.idToken = localStorage.getItem("id_token") || null;
+      this.accessToken = localStorage.getItem("access_token") || null;
+
+      this.email = this.getEmailFromToken(this.idToken) || "guest@local";
 
       // DOM
       this.roomNameEl = document.getElementById("roomName");
@@ -32,35 +37,25 @@ if (window.__CHAT_APP_RUNNING__) {
       this.roomButtons = document.querySelectorAll(".room-btn");
 
       this.bindEvents();
-
-      // Start
-      this.init().catch((e) => console.error("Init failed:", e));
+      this.init();
     }
 
     // --------------------------
     // Init
     // --------------------------
     async init() {
-      // 1) If we came back from Cognito Hosted UI with ?code=..., exchange it
-      const code = this.getAuthCodeFromUrl();
-      if (code) {
-        const ok = await this.exchangeCodeForTokens(code);
-        if (ok) {
-          // remove ?code from URL (prevents re-exchange on refresh)
-          this.cleanUrl();
-        }
-      }
-
-      // 2) Re-read token/email after exchange
-      this.token = this.getIdToken() || "dummy";
-      this.email = this.getEmailFromJwt(this.token) || "guest@local";
-
-      // 3) UI
-      this.currentUserEl.textContent = `👤 ${this.email}`;
       this.roomNameEl.textContent = this.currentRoom;
       this.setStatus(false);
 
-      // 4) Load history and connect
+      // 1) If we came from Cognito Hosted UI, we have ?code=
+      //    Exchange code -> tokens -> store -> set email
+      await this.handleAuthCodeIfPresent();
+
+      // 2) Update UI with real email (after exchange)
+      this.email = this.getEmailFromToken(localStorage.getItem("id_token")) || "guest@local";
+      this.currentUserEl.textContent = `👤 ${this.email}`;
+
+      // 3) Load messages + connect WS
       await this.loadHistory(this.currentRoom);
       this.connectWebSocket();
     }
@@ -86,6 +81,14 @@ if (window.__CHAT_APP_RUNNING__) {
       });
     }
 
+    setStatus(connected) {
+      this.statusTextEl.textContent = connected ? "Connected" : "Disconnected";
+      if (this.statusDotEl) {
+        this.statusDotEl.classList.toggle("connected", connected);
+        this.statusDotEl.classList.toggle("disconnected", !connected);
+      }
+    }
+
     // --------------------------
     // Config helpers
     // --------------------------
@@ -97,81 +100,75 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     wsBase() {
-      // IMPORTANT:
-      // Your config has API_GATEWAY_ENDPOINT = "wss://cloudfront..."
+      // Use config.js gateway endpoint if present, else same host
       if (window.CONFIG && CONFIG.API_GATEWAY_ENDPOINT) {
         return String(CONFIG.API_GATEWAY_ENDPOINT).replace(/\/$/, "");
       }
-
       const isHttps = window.location.protocol === "https:";
       const proto = isHttps ? "wss" : "ws";
       return `${proto}://${window.location.host}`;
     }
 
+    messagesUrl(room) {
+      return `${this.apiBase()}/rooms/${encodeURIComponent(room)}/messages?limit=50`;
+    }
+
+    wsUrl(room) {
+      const token = localStorage.getItem("id_token") || "dummy";
+      const email = this.getEmailFromToken(token) || "guest@local";
+
+      // Pass both: backend can store/use email directly
+      return `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+    }
+
     // --------------------------
-    // Cognito code exchange (server-side)
+    // Auth Code Exchange (THIS FIXES guest@local)
     // --------------------------
-    getAuthCodeFromUrl() {
+    async handleAuthCodeIfPresent() {
       const params = new URLSearchParams(window.location.search);
-      return params.get("code");
-    }
+      const code = params.get("code");
+      if (!code) return;
 
-    cleanUrl() {
-      // remove query params completely (simple + safe)
-      const clean = window.location.origin + window.location.pathname;
-      window.history.replaceState({}, document.title, clean);
-    }
-
-    getIdToken() {
-      return localStorage.getItem("id_token");
-    }
-
-    async exchangeCodeForTokens(code) {
       try {
-        const redirectUri = window.location.origin; // matches your Hosted UI redirect
-        const url = `${this.apiBase()}/auth/exchange`;
+        const redirectUri = window.location.origin;
 
-        const res = await fetch(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ code, redirect_uri: redirectUri }),
-        });
+        // backend should exchange code for tokens
+        const url = `${this.apiBase()}/auth/exchange?code=${encodeURIComponent(code)}&redirect_uri=${encodeURIComponent(redirectUri)}`;
+        const res = await fetch(url);
 
-        const data = await res.json();
-        if (!data.ok) {
-          console.error("Token exchange failed:", data.error);
-          return false;
+        if (!res.ok) {
+          console.error("Auth exchange failed:", res.status, await res.text());
+          return;
         }
 
-        const tokens = data.tokens || {};
-        if (tokens.id_token) localStorage.setItem("id_token", tokens.id_token);
-        if (tokens.access_token) localStorage.setItem("access_token", tokens.access_token);
+        const data = await res.json();
 
-        return true;
+        if (data.id_token) localStorage.setItem("id_token", data.id_token);
+        if (data.access_token) localStorage.setItem("access_token", data.access_token);
+        if (data.refresh_token) localStorage.setItem("refresh_token", data.refresh_token);
+
+        // Clean URL (remove ?code=...) so refresh doesn’t re-exchange endlessly
+        params.delete("code");
+        const newUrl = `${window.location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
+        window.history.replaceState({}, document.title, newUrl);
       } catch (e) {
-        console.error("Token exchange error:", e);
-        return false;
+        console.error("Auth exchange error:", e);
       }
     }
 
-    // --------------------------
-    // JWT email extraction (frontend display)
-    // --------------------------
-    getEmailFromJwt(token) {
+    getEmailFromToken(token) {
       try {
         if (!token) return null;
         const parts = String(token).split(".");
         if (parts.length !== 3) return null;
 
-        const b64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
-        const pad = "=".repeat((4 - (b64.length % 4)) % 4);
-        const payload = JSON.parse(atob(b64 + pad));
+        const payloadJson = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
+        const payload = JSON.parse(payloadJson);
 
         const email =
           payload.email ||
           payload["cognito:username"] ||
-          payload.username ||
-          payload.preferred_username;
+          payload.username;
 
         return email ? String(email).toLowerCase() : null;
       } catch {
@@ -180,41 +177,23 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     // --------------------------
-    // UI status
-    // --------------------------
-    setStatus(connected) {
-      this.statusTextEl.textContent = connected ? "Connected" : "Disconnected";
-      if (this.statusDotEl) {
-        this.statusDotEl.classList.toggle("connected", connected);
-        this.statusDotEl.classList.toggle("disconnected", !connected);
-      }
-    }
-
-    // --------------------------
     // History
     // --------------------------
     async loadHistory(room) {
       try {
-        const url = `${this.apiBase()}/rooms/${encodeURIComponent(room)}/messages?limit=50`;
-        const res = await fetch(url);
+        const res = await fetch(this.messagesUrl(room));
         const data = await res.json();
 
         this.messageListEl.innerHTML = "";
         (data.messages || []).forEach((m) => this.renderMessage(m));
-      } catch (e) {
-        console.error("History load failed:", e);
+      } catch (err) {
+        console.error("History load failed:", err);
       }
     }
 
     // --------------------------
-    // WebSocket (stable)
+    // WebSocket (no infinite reconnect)
     // --------------------------
-    wsUrl(room) {
-      const t = encodeURIComponent(this.token || "dummy");
-      const e = encodeURIComponent(this.email || "guest@local");
-      return `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${t}&email=${e}`;
-    }
-
     connectWebSocket() {
       if (
         this.websocket &&
@@ -293,21 +272,24 @@ if (window.__CHAT_APP_RUNNING__) {
       this.setStatus(false);
     }
 
-    switchRoom(room) {
+    // --------------------------
+    // Room switching
+    // --------------------------
+    async switchRoom(room) {
       if (!room || room === this.currentRoom) return;
 
       this.closeSocketHard();
 
       this.currentRoom = room;
       this.roomNameEl.textContent = room;
-
       this.messageListEl.innerHTML = "";
-      this.loadHistory(room);
+
+      await this.loadHistory(room);
       this.connectWebSocket();
     }
 
     // --------------------------
-    // Send + Render
+    // Send
     // --------------------------
     sendMessage() {
       const text = (this.messageInputEl.value || "").trim();
@@ -323,6 +305,9 @@ if (window.__CHAT_APP_RUNNING__) {
       this.messageInputEl.value = "";
     }
 
+    // --------------------------
+    // Render
+    // --------------------------
     renderMessage(msg) {
       if (!msg || msg.type !== "message") return;
 
@@ -333,11 +318,9 @@ if (window.__CHAT_APP_RUNNING__) {
       const div = document.createElement("div");
       div.className = "message";
 
-      if (String(user).toLowerCase() === String(this.email).toLowerCase()) {
-        div.classList.add("own");
-      } else {
-        div.classList.add("other");
-      }
+      const me = (this.getEmailFromToken(localStorage.getItem("id_token")) || "guest@local").toLowerCase();
+      if (String(user).toLowerCase() === me) div.classList.add("own");
+      else div.classList.add("other");
 
       div.innerHTML = `
         <div class="message-content">${this.escape(text)}</div>
