@@ -1,9 +1,9 @@
-// app.js (clean: never shows guest@local anywhere)
-// - single instance guard
+// app.js (hard rules)
+// - top corner ALWAYS: "You"
+// - message sender ALWAYS: "Anonymous"
 // - no infinite reconnect on room switch
-// - if email not available => shows "Anonymous" (NOT guest@local)
-// - ws url: does NOT send email param unless we have a real email
-// - messages: if stored sender is guest@local => display "Anonymous"
+// - single instance guard
+// - DOES NOT send email in WS URL (removes guest@local everywhere)
 
 if (window.__CHAT_APP_RUNNING__) {
   console.warn("ChatApp already running - skipping duplicate init");
@@ -20,13 +20,6 @@ if (window.__CHAT_APP_RUNNING__) {
       this.reconnectTimer = null;
       this.reconnectAttempts = 0;
       this.maxReconnectDelayMs = 10000;
-
-      // Tokens
-      this.idToken = localStorage.getItem("id_token") || null;
-
-      // Identity (NEVER default to guest@local)
-      this.email = this.getEmailFromToken(this.idToken); // can be null
-      this.displayName = this.safeDisplayName(this.email);
 
       // DOM
       this.roomNameEl = document.getElementById("roomName");
@@ -46,24 +39,15 @@ if (window.__CHAT_APP_RUNNING__) {
     // Init
     // --------------------------
     async init() {
-      this.roomNameEl.textContent = this.currentRoom;
-      this.setStatus(false);
+      if (this.roomNameEl) this.roomNameEl.textContent = this.currentRoom;
 
-      // Always show safe name (never guest@local)
-      this.refreshIdentityUI();
+      // HARD CODE: top-right always "You"
+      if (this.currentUserEl) this.currentUserEl.textContent = "👤 You";
+
+      this.setStatus(false);
 
       await this.loadHistory(this.currentRoom);
       this.connectWebSocket();
-    }
-
-    refreshIdentityUI() {
-      // Re-read token in case it was set later
-      this.idToken = localStorage.getItem("id_token") || null;
-      this.email = this.getEmailFromToken(this.idToken);
-      this.displayName = this.safeDisplayName(this.email);
-
-      // UI shows Anonymous if no email
-      if (this.currentUserEl) this.currentUserEl.textContent = `👤 ${this.displayName}`;
     }
 
     bindEvents() {
@@ -120,52 +104,10 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     wsUrl(room) {
-      // Token: if missing, use "dummy" but DO NOT attach guest email
+      // Use token if you have it, else dummy
+      // BUT: never send email param (removes guest@local showing up in logs/ui)
       const token = localStorage.getItem("id_token") || "dummy";
-      const email = this.getEmailFromToken(token); // null if not real
-
-      let url = `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${encodeURIComponent(token)}`;
-
-      // Only attach email param if we actually have a real email
-      if (email) url += `&email=${encodeURIComponent(email)}`;
-
-      return url;
-    }
-
-    // --------------------------
-    // Identity helpers
-    // --------------------------
-    safeDisplayName(email) {
-      // Hard rule: never show guest@local anywhere
-      if (!email) return "Anonymous";
-
-      const e = String(email).toLowerCase().trim();
-      if (!e || e === "guest@local") return "Anonymous";
-      return e;
-    }
-
-    getEmailFromToken(token) {
-      try {
-        if (!token) return null;
-        const parts = String(token).split(".");
-        if (parts.length !== 3) return null;
-
-        const payloadJson = atob(parts[1].replace(/-/g, "+").replace(/_/g, "/"));
-        const payload = JSON.parse(payloadJson);
-
-        const email =
-          payload.email ||
-          payload["cognito:username"] ||
-          payload.username;
-
-        if (!email) return null;
-
-        const e = String(email).toLowerCase().trim();
-        if (!e || e === "guest@local") return null;
-        return e;
-      } catch {
-        return null;
-      }
+      return `${this.wsBase()}/ws/${encodeURIComponent(room)}?token=${encodeURIComponent(token)}`;
     }
 
     // --------------------------
@@ -199,9 +141,6 @@ if (window.__CHAT_APP_RUNNING__) {
         clearTimeout(this.reconnectTimer);
         this.reconnectTimer = null;
       }
-
-      // Refresh UI identity before connecting (in case token was set)
-      this.refreshIdentityUI();
 
       const url = this.wsUrl(this.currentRoom);
       console.log("WS connecting:", url);
@@ -274,7 +213,7 @@ if (window.__CHAT_APP_RUNNING__) {
       this.closeSocketHard();
 
       this.currentRoom = room;
-      this.roomNameEl.textContent = room;
+      if (this.roomNameEl) this.roomNameEl.textContent = room;
       this.messageListEl.innerHTML = "";
 
       await this.loadHistory(room);
@@ -299,31 +238,25 @@ if (window.__CHAT_APP_RUNNING__) {
     }
 
     // --------------------------
-    // Render (never show guest@local)
+    // Render (HARD CODE sender: Anonymous)
     // --------------------------
     renderMessage(msg) {
       if (!msg || msg.type !== "message") return;
 
-      // Backends may send: email or username
-      const rawUser = msg.email || msg.username || "";
-      const user = this.safeDisplayName(rawUser); // converts guest@local -> Anonymous
       const text = msg.text || "";
       const ts = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : "";
 
       const div = document.createElement("div");
       div.className = "message";
 
-      // Own/other only if we have real email AND message has real email
-      const me = this.getEmailFromToken(localStorage.getItem("id_token"));
-      if (me && rawUser && String(rawUser).toLowerCase() === String(me).toLowerCase()) {
-        div.classList.add("own");
-      } else {
-        div.classList.add("other");
-      }
+      // If you want YOUR messages visually different, keep this.
+      // Since you said all senders should be Anonymous, we can't reliably detect "own".
+      // We'll treat everything as "other" to avoid wrong styling.
+      div.classList.add("other");
 
       div.innerHTML = `
         <div class="message-content">${this.escape(text)}</div>
-        <div class="message-meta">${this.escape(user)} • ${this.escape(ts)}</div>
+        <div class="message-meta">Anonymous • ${this.escape(ts)}</div>
       `;
 
       this.messageListEl.appendChild(div);
